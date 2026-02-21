@@ -1,8 +1,6 @@
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import "./login.css";
-
-const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export default function Login() {
   const navigate = useNavigate();
@@ -12,7 +10,7 @@ export default function Login() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.SyntheticEvent) => {
     e.preventDefault();
     setError(null);
 
@@ -21,16 +19,25 @@ export default function Login() {
       return;
     }
 
-    if (!emailRegex.test(email)) {
-      setError("Please enter a valid email address");
-      return;
-    }
-
     setLoading(true);
-    setTimeout(() => {
-      setLoading(false);
+    try {
+      const res = await fetch("http://localhost:8000/api/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.detail || "Login failed");
+        return;
+      }
+      localStorage.setItem("access_token", data.access_token);
       navigate("/dashboard");
-    }, 1200);
+    } catch {
+      setError("Unable to reach server. Is the backend running?");
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -38,28 +45,59 @@ export default function Login() {
       {/* Navbar */}
       <header className="navbar">
         <div className="logo">Enterprise AI Suite</div>
-        <nav>
-          <a>Platform</a>
-          <a>Solutions</a>
-          <a>Resources</a>
-          <a>Pricing</a>
-          <button className="primary-btn">Get Started</button>
-        </nav>
       </header>
 
       {/* Main */}
       <main className="main">
         {/* Left Hero */}
         <section className="hero">
-          <h1>Welcome to your AI Operations Hub</h1>
+          <div className="hero-eyebrow">Enterprise AI Platform</div>
+          <h1>Your Internal AI Workspace</h1>
           <p>
-            Securely access your HR and internal data workspace powered by
-            enterprise-grade artificial intelligence.
+            A unified platform that brings AI capabilities to your organisation.
           </p>
 
-          <div className="features">
-            <span>🔒 SSO Secure</span>
-            <span>📊 Real-time insights</span>
+          <div className="use-cases">
+            <div className="use-case-card">
+              <div className="use-case-icon">📊</div>
+              <div>
+                <div className="use-case-title">Data Query & Dashboard</div>
+                <div className="use-case-desc">
+                  Ask your internal database questions in plain English. Get instant
+                  answers visualised as charts and dashboards — no SQL required.
+                </div>
+              </div>
+            </div>
+            <div className="use-case-card">
+              <div className="use-case-icon">📚</div>
+              <div>
+                <div className="use-case-title">Internal Document Q&A</div>
+                <div className="use-case-desc">
+                  Upload policies, reports, or manuals and ask questions. The AI
+                  answers based strictly on your own documents.
+                </div>
+              </div>
+            </div>
+            <div className="use-case-card">
+              <div className="use-case-icon">💼</div>
+              <div>
+                <div className="use-case-title">Resume Screening</div>
+                <div className="use-case-desc">
+                  HR teams bulk-upload resumes and let AI rank, filter, and summarise
+                  candidates against job requirements in seconds.
+                </div>
+              </div>
+            </div>
+            <div className="use-case-card use-case-card--muted">
+              <div className="use-case-icon">✦</div>
+              <div>
+                <div className="use-case-title">More coming soon</div>
+                <div className="use-case-desc">
+                  Additional AI modules are on the roadmap and will be rolled out
+                  progressively.
+                </div>
+              </div>
+            </div>
           </div>
         </section>
 
@@ -99,15 +137,8 @@ export default function Login() {
             </button>
           </form>
 
-          <div className="divider">OR CONTINUE WITH</div>
-
-          <div className="oauth">
-            <button>Google</button>
-            <button>GitHub</button>
-          </div>
-
           <p className="register">
-            Don’t have an account? <span>Register your organization</span>
+            Don’t have an account? <Link to="/register">Register your organization</Link>
           </p>
         </section>
       </main>
