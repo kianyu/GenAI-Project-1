@@ -1,0 +1,172 @@
+* {
+  box-sizing: border-box;
+  font-family: Inter, system-ui, sans-serif;
+}
+
+.login-page {
+  min-height: 100vh;
+  background: radial-gradient(circle at top, #142433, #0b1320);
+  color: #fff;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Navbar */
+.navbar {
+  height: 64px;
+  padding: 0 48px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.navbar nav {
+  display: flex;
+  gap: 24px;
+  align-items: center;
+}
+
+.navbar a {
+  color: #cbd5e1;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.logo {
+  font-weight: 600;
+}
+
+/* Main */
+.main {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 1.2fr 1fr;
+  padding: 48px;
+  gap: 48px;
+}
+
+.hero h1 {
+  font-size: 42px;
+  line-height: 1.2;
+  margin-bottom: 16px;
+}
+
+.hero p {
+  color: #9ca3af;
+  max-width: 480px;
+}
+
+.features {
+  margin-top: 24px;
+  display: flex;
+  gap: 24px;
+  color: #93c5fd;
+}
+
+/* Login Card */
+.login-card {
+  background: rgba(15, 23, 42, 0.9);
+  border-radius: 14px;
+  padding: 32px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
+}
+
+.login-card h2 {
+  margin-bottom: 24px;
+}
+
+.login-card label {
+  font-size: 13px;
+  color: #cbd5e1;
+}
+
+.password-label {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.forgot {
+  color: #60a5fa;
+  cursor: pointer;
+}
+
+.login-card input {
+  width: 100%;
+  padding: 10px;
+  margin-bottom: 16px;
+  border-radius: 6px;
+  border: 1px solid #334155;
+  background: #020617;
+  color: #fff;
+}
+
+.checkbox {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 13px;
+  color: #cbd5e1;
+  margin-bottom: 16px;
+}
+
+.checkbox input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  cursor: pointer;
+}
+
+/* Buttons */
+.primary-btn {
+  background: #1d4ed8;
+  border: none;
+  color: #fff;
+  padding: 10px 16px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.primary-btn.full {
+  width: 100%;
+}
+
+.primary-btn:disabled {
+  opacity: 0.6;
+}
+
+/* Error */
+.error {
+  color: #f87171;
+  font-size: 13px;
+  margin-bottom: 12px;
+}
+
+/* OAuth */
+.divider {
+  margin: 24px 0;
+  font-size: 12px;
+  text-align: center;
+  color: #64748b;
+}
+
+.oauth {
+  display: flex;
+  gap: 12px;
+}
+
+.oauth button {
+  flex: 1;
+  background: #020617;
+  border: 1px solid #334155;
+  color: #fff;
+  padding: 8px;
+  border-radius: 6px;
+}
+
+/* Footer */
+.footer {
+  padding: 16px;
+  text-align: center;
+  font-size: 12px;
+  color: #64748b;
+}
