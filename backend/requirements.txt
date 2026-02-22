@@ -5,3 +5,5 @@ sqlalchemy[asyncio]
 asyncpg
 bcrypt
 python-dotenv
+anthropic
+python-multipart
