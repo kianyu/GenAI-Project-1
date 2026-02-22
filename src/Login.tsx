@@ -5,8 +5,11 @@ import "./login.css";
 export default function Login() {
   const navigate = useNavigate();
 
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
+  const rememberedEmail    = localStorage.getItem("remembered_email") || "";
+  const rememberedPassword = localStorage.getItem("remembered_password") || "";
+  const [email, setEmail]       = useState(rememberedEmail);
+  const [password, setPassword] = useState(rememberedPassword);
+  const [rememberMe, setRememberMe] = useState(!!rememberedPassword);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -24,14 +27,24 @@ export default function Login() {
       const res = await fetch("http://localhost:8000/api/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password }),
+        body: JSON.stringify({ email, password, remember_me: rememberMe }),
       });
       const data = await res.json();
       if (!res.ok) {
         setError(data.detail || "Login failed");
         return;
       }
-      localStorage.setItem("access_token", data.access_token);
+      // Always remember the email; remember password only when checked
+      localStorage.setItem("remembered_email", email);
+      if (rememberMe) {
+        localStorage.setItem("access_token", data.access_token);
+        localStorage.setItem("remembered_password", password);
+        sessionStorage.removeItem("access_token");
+      } else {
+        sessionStorage.setItem("access_token", data.access_token);
+        localStorage.removeItem("access_token");
+        localStorage.removeItem("remembered_password");
+      }
       navigate("/dashboard");
     } catch {
       setError("Unable to reach server. Is the backend running?");
@@ -126,8 +139,13 @@ export default function Login() {
             />
 
             <div className="checkbox">
-              <input type="checkbox" />
-              <span>Remember me for 30 days</span>
+              <input
+                type="checkbox"
+                id="remember-me"
+                checked={rememberMe}
+                onChange={e => setRememberMe(e.target.checked)}
+              />
+              <label htmlFor="remember-me">Remember me for 30 days</label>
             </div>
 
             {error && <div className="error">{error}</div>}
@@ -147,6 +165,9 @@ export default function Login() {
       <footer className="footer">
         Privacy Policy · Terms of Service · Compliance
       </footer>
+
+      {/* Contributor badge */}
+      <div className="contributor-badge">Built by Charles &amp; Kian Yu</div>
     </div>
   );
 }

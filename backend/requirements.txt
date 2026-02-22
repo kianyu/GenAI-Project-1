@@ -7,3 +7,9 @@ bcrypt
 python-dotenv
 anthropic
 python-multipart
+google-genai
+httpx
+supabase
+pypdf
+python-docx
+pgvector

@@ -1,26 +1,27 @@
 import json
 import os
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Optional
 
 import anthropic as anthropic_sdk
 import bcrypt
-import jwt
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from auth import create_token, get_current_user
 from database import AsyncSessionLocal, Base, engine, get_db
 from models import BugReport, ChatMessage, ChatSession, User
 
-SECRET_KEY = "dev-secret-key-change-in-production"
-ALGORITHM = "HS256"
-TOKEN_EXPIRE_HOURS = 24
+# ── RAG — Document Router ─────────────────────────────────────────────────────
+from rag.retrieval import build_rag_system_prompt, retrieve_context
+from rag.router import router as rag_router
+# ─────────────────────────────────────────────────────────────────────────────
 
 UPLOAD_DIR = "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
@@ -77,38 +78,22 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ── RAG — mount document router ───────────────────────────────────────────────
+app.include_router(rag_router)
+# ─────────────────────────────────────────────────────────────────────────────
+
 
 # ── Auth ─────────────────────────────────────────────────────────────────────
 
 class LoginRequest(BaseModel):
     email: str
     password: str
+    remember_me: bool = False
 
 
 class RegisterRequest(BaseModel):
     email: str
     password: str
-
-
-def create_token(email: str) -> str:
-    payload = {
-        "sub": email,
-        "exp": datetime.now(timezone.utc) + timedelta(hours=TOKEN_EXPIRE_HOURS),
-    }
-    return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
-
-
-def get_current_user(authorization: Optional[str] = Header(None)) -> str:
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    token = authorization.split(" ", 1)[1]
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        return payload["sub"]
-    except jwt.ExpiredSignatureError:
-        raise HTTPException(status_code=401, detail="Token expired")
-    except jwt.InvalidTokenError:
-        raise HTTPException(status_code=401, detail="Invalid token")
 
 
 @app.post("/api/login")
@@ -117,7 +102,7 @@ async def login(data: LoginRequest, db: AsyncSession = Depends(get_db)):
     user = result.scalar_one_or_none()
     if user is None or not verify_password(data.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid credentials")
-    return {"access_token": create_token(user.email), "token_type": "bearer"}
+    return {"access_token": create_token(user.email, data.remember_me), "token_type": "bearer"}
 
 
 @app.post("/api/register")
@@ -149,8 +134,8 @@ MODULE_PROMPTS: dict[str, str] = {
     "doc-qa": (
         "You are an AI document assistant for an enterprise platform. "
         "Help the user ask questions about their internal documents and knowledge base. "
-        "Guide them in framing precise questions and assist with document analysis. "
-        "Document uploads and embedding are handled through the platform."
+        "When answering, cite sources using [Source: filename] so the user knows where "
+        "the information came from. Be precise and reference the provided context."
     ),
     "resume": (
         "You are an HR AI assistant specialising in resume screening and candidate evaluation. "
@@ -158,11 +143,18 @@ MODULE_PROMPTS: dict[str, str] = {
         "and provide structured evaluation frameworks. "
         "Resume uploads and parsing are processed through the platform."
     ),
+    "general": (
+        "You are a helpful AI assistant. You can help with any topic — "
+        "technology, science, business, coding, current trends, general knowledge, and more. "
+        "Be friendly, concise, and accurate."
+    ),
 }
 
+# General-purpose base prompt (used when no module is selected)
 BASE_SYSTEM_PROMPT = (
-    "You are a helpful enterprise AI assistant. You assist users with data analysis, "
-    "internal document question-answering, and HR tasks. Be professional, concise, and accurate."
+    "You are a helpful AI assistant. You can help with any topic — "
+    "technology, science, business, coding, current trends, general knowledge, and more. "
+    "Be friendly, concise, and accurate."
 )
 
 
@@ -195,6 +187,15 @@ async def chat_stream(
     system = MODULE_PROMPTS.get(data.module or "", BASE_SYSTEM_PROMPT)
     model = data.model if data.model in ALLOWED_MODELS else "claude-haiku-4-5-20251001"
 
+    # ── RAG: always check if the question is relevant to uploaded documents ────
+    # retrieve_context returns ("", []) when no documents exist or none are relevant,
+    # so this is a no-op for users without documents or off-topic questions.
+    sources: list[dict] = []
+    context_str, sources = await retrieve_context(data.message, user, db)
+    if context_str:
+        system = build_rag_system_prompt(system, context_str)
+    # ─────────────────────────────────────────────────────────────────────────
+
     api_messages = [{"role": m.role, "content": m.content} for m in data.history]
     api_messages.append({"role": "user", "content": data.message})
 
@@ -226,6 +227,11 @@ async def chat_stream(
         # Send session info as first event
         yield f"data: {json.dumps({'type': 'session', 'session_id': session_id, 'title': session_title})}\n\n"
 
+        # ── RAG: send source citations before response text ───────────────────
+        if sources:
+            yield f"data: {json.dumps({'type': 'sources', 'sources': sources})}\n\n"
+        # ─────────────────────────────────────────────────────────────────────
+
         full_response = ""
         client = anthropic_sdk.AsyncAnthropic(api_key=api_key)
         try:
@@ -244,7 +250,13 @@ async def chat_stream(
         # Persist assistant response in a fresh session
         if full_response:
             async with AsyncSessionLocal() as save_db:
-                save_db.add(ChatMessage(session_id=session_id, role="assistant", content=full_response))
+                save_db.add(ChatMessage(
+                    session_id=session_id,
+                    role="assistant",
+                    content=full_response,
+                    # RAG — persist source citations so they survive page reload
+                    sources_json=json.dumps(sources) if sources else None,
+                ))
                 await save_db.commit()
 
         yield "data: [DONE]\n\n"
@@ -293,9 +305,34 @@ async def get_session_messages(
         .order_by(ChatMessage.created_at)
     )
     return [
-        {"id": m.id, "role": m.role, "content": m.content, "created_at": m.created_at.isoformat()}
+        {
+            "id": m.id,
+            "role": m.role,
+            "content": m.content,
+            "created_at": m.created_at.isoformat(),
+            # RAG — restore source citations from DB
+            "sources": json.loads(m.sources_json) if m.sources_json else [],
+        }
         for m in msgs.scalars().all()
     ]
+
+
+@app.delete("/api/sessions/{session_id}")
+async def delete_session(
+    session_id: int,
+    user: str = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(ChatSession).where(ChatSession.id == session_id, ChatSession.user_email == user)
+    )
+    if result.scalar_one_or_none() is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    await db.execute(delete(ChatMessage).where(ChatMessage.session_id == session_id))
+    await db.execute(delete(ChatSession).where(ChatSession.id == session_id))
+    await db.commit()
+    return {"message": "Session deleted"}
 
 
 # ── Bug Reports ───────────────────────────────────────────────────────────────
@@ -378,7 +415,6 @@ async def delete_bug(
     bug = result.scalar_one_or_none()
     if not bug:
         raise HTTPException(status_code=404, detail="Not found")
-    # Remove uploaded image if present
     if bug.image_filename:
         image_path = os.path.join(UPLOAD_DIR, bug.image_filename)
         if os.path.exists(image_path):

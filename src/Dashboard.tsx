@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
+import ReactMarkdown from "react-markdown";
 import "./dashboard.css";
 
 interface Message {
@@ -7,6 +8,15 @@ interface Message {
   role: "user" | "assistant";
   content: string;
   timestamp: Date;
+  sources?: SourceItem[];  // RAG source citations
+}
+
+// RAG source citation attached to an assistant message
+interface SourceItem {
+  doc_id: number;
+  filename: string;
+  chunk_index: number;
+  excerpt: string;
 }
 
 interface Session {
@@ -21,6 +31,17 @@ interface BugReport {
   description: string;
   image_filename: string | null;
   status: string;
+  created_at: string;
+}
+
+// RAG document metadata
+interface DocItem {
+  id: number;
+  filename: string;
+  is_active: boolean;
+  chunk_count: number;
+  embedded_count: number;
+  file_size: number | null;
   created_at: string;
 }
 
@@ -42,6 +63,12 @@ const MODULES = [
     icon: "💼",
     label: "Resume Screening",
     desc: "Screen candidates and rank resumes against job requirements",
+  },
+  {
+    id: "general",
+    icon: "💬",
+    label: "General Chat",
+    desc: "Ask anything — technology trends, how things work, general knowledge",
   },
 ];
 
@@ -87,11 +114,31 @@ export default function Dashboard() {
   const [bugSubmitting, setBugSubmitting] = useState(false);
   const [bugSuccess, setBugSuccess] = useState(false);
 
+  // RAG — documents
+  const [documents, setDocuments] = useState<DocItem[]>([]);
+  const [docUploading, setDocUploading] = useState(false);
+
+  // RAG — which message IDs have their source cards expanded
+  const [expandedSources, setExpandedSources] = useState<Set<string>>(new Set());
+
+  // Panel visibility toggles
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [rightPanelOpen, setRightPanelOpen] = useState(true);
+  const toggleSources = (msgId: string) => {
+    setExpandedSources(prev => {
+      const next = new Set(prev);
+      if (next.has(msgId)) next.delete(msgId); else next.add(msgId);
+      return next;
+    });
+  };
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const docFileInputRef = useRef<HTMLInputElement>(null);
+  const docFolderInputRef = useRef<HTMLInputElement>(null);
 
-  const token = localStorage.getItem("access_token");
+  const token = localStorage.getItem("access_token") || sessionStorage.getItem("access_token");
   const hasStartedChat = messages.length > 0;
 
   // ── Init ──────────────────────────────────────────────────────────────────
@@ -104,6 +151,15 @@ export default function Dashboard() {
 
     fetchSessions();
     fetchMe();
+    fetchDocuments();
+  }, []);
+
+  // Set webkitdirectory on the folder input (not a standard React prop)
+  useEffect(() => {
+    if (docFolderInputRef.current) {
+      docFolderInputRef.current.setAttribute("webkitdirectory", "");
+      docFolderInputRef.current.setAttribute("directory", "");
+    }
   }, []);
 
   useEffect(() => {
@@ -113,6 +169,14 @@ export default function Dashboard() {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  // Poll for document ingestion progress while any doc is still processing/retrying
+  useEffect(() => {
+    const hasProcessing = documents.some(d => d.chunk_count === 0 || (d.chunk_count > 0 && d.embedded_count === 0));
+    if (!hasProcessing) return;
+    const timer = setInterval(fetchDocuments, 5000);
+    return () => clearInterval(timer);
+  }, [documents]);
 
   const authHeaders = (): Record<string, string> => ({
     Authorization: `Bearer ${token}`,
@@ -143,11 +207,12 @@ export default function Dashboard() {
       });
       const data = await res.json();
       setMessages(
-        data.map((m: { id: number; role: string; content: string; created_at: string }) => ({
+        data.map((m: { id: number; role: string; content: string; created_at: string; sources?: SourceItem[] }) => ({
           id: `db-${m.id}`,
           role: m.role as "user" | "assistant",
           content: m.content,
           timestamp: new Date(m.created_at),
+          sources: m.sources?.length ? m.sources : undefined,
         }))
       );
       setCurrentSessionId(sessionId);
@@ -159,6 +224,17 @@ export default function Dashboard() {
     setMessages([]);
     setCurrentSessionId(null);
     setActiveModule(null);
+  };
+
+  const deleteSession = async (sessionId: number, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!window.confirm("Delete this conversation? This cannot be undone.")) return;
+    await fetch(`${API}/api/sessions/${sessionId}`, {
+      method: "DELETE",
+      headers: authHeaders(),
+    });
+    setSessions(prev => prev.filter(s => s.id !== sessionId));
+    if (currentSessionId === sessionId) startNewChat();
   };
 
   // ── Streaming chat ────────────────────────────────────────────────────────
@@ -219,6 +295,11 @@ export default function Dashboard() {
                 if (prev.some(s => s.id === event.session_id)) return prev;
                 return [{ id: event.session_id, title: event.title, updated_at: new Date().toISOString() }, ...prev];
               });
+            } else if (event.type === "sources") {
+              // RAG: attach source citations to the assistant message
+              setMessages(prev =>
+                prev.map(m => m.id === assistantMsgId ? { ...m, sources: event.sources } : m)
+              );
             } else if (event.type === "text") {
               setMessages(prev =>
                 prev.map(m => m.id === assistantMsgId ? { ...m, content: m.content + event.text } : m)
@@ -241,17 +322,7 @@ export default function Dashboard() {
     }
   };
 
-  // Welcome quick card — auto-send an intro message
-  const handleQuickAction = (moduleId: string) => {
-    setActiveModule(moduleId);
-    const mod = MODULES.find(m => m.id === moduleId)!;
-    sendMessage(`I'd like to use the ${mod.label} feature. What can I do with it?`, moduleId);
-  };
 
-  // Sidebar module click — just toggle the context chip
-  const handleSidebarModule = (moduleId: string) => {
-    setActiveModule(prev => (prev === moduleId ? null : moduleId));
-  };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -264,6 +335,57 @@ export default function Dashboard() {
     setInput(e.target.value);
     e.target.style.height = "auto";
     e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px";
+  };
+
+  // ── RAG — Documents ───────────────────────────────────────────────────────
+  const fetchDocuments = async () => {
+    try {
+      const res = await fetch(`${API}/api/documents/`, { headers: authHeaders() });
+      const data = await res.json();
+      setDocuments(Array.isArray(data) ? data : []);
+    } catch { /* silent */ }
+  };
+
+  const uploadDocuments = async (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    setDocUploading(true);
+    const form = new FormData();
+    for (const f of files) form.append("files", f);
+    try {
+      await fetch(`${API}/api/documents/`, {
+        method: "POST",
+        headers: authHeaders(),
+        body: form,
+      });
+    } catch { /* silent */ }
+    setDocUploading(false);
+    fetchDocuments();
+  };
+
+  const toggleDocument = async (docId: number) => {
+    await fetch(`${API}/api/documents/${docId}/toggle`, {
+      method: "PATCH",
+      headers: authHeaders(),
+    });
+    fetchDocuments();
+  };
+
+  const deleteDocument = async (docId: number) => {
+    if (!window.confirm("Delete this document and all its data? This cannot be undone.")) return;
+    await fetch(`${API}/api/documents/${docId}`, {
+      method: "DELETE",
+      headers: authHeaders(),
+    });
+    fetchDocuments();
+  };
+
+  // ── RAG — Reprocess a document whose embeddings failed ─────────────────────
+  const reprocessDocument = async (docId: number) => {
+    await fetch(`${API}/api/documents/${docId}/reprocess`, {
+      method: "POST",
+      headers: authHeaders(),
+    });
+    fetchDocuments();
   };
 
   // ── Bug reports ───────────────────────────────────────────────────────────
@@ -324,6 +446,7 @@ export default function Dashboard() {
 
   const logout = () => {
     localStorage.removeItem("access_token");
+    sessionStorage.removeItem("access_token");
     navigate("/");
   };
 
@@ -332,7 +455,7 @@ export default function Dashboard() {
     <div className="dashboard">
 
       {/* ─── Sidebar ─── */}
-      <aside className="sidebar">
+      <aside className={`sidebar${sidebarOpen ? "" : " sidebar--collapsed"}`}>
         <div className="sb-top">
           <div className="sb-logo">
             <span className="sb-logo-icon">✦</span>
@@ -352,38 +475,29 @@ export default function Dashboard() {
           </div>
         </div>
 
-        <div className="sb-divider" />
-
-        <div className="sb-section-title">Modules</div>
-        <nav className="sb-nav">
-          {MODULES.map(m => (
-            <button
-              key={m.id}
-              className={`sb-nav-item ${activeModule === m.id ? "sb-nav-item--active" : ""}`}
-              onClick={() => handleSidebarModule(m.id)}
-              title={m.desc}
-            >
-              <span className="sb-nav-icon">{m.icon}</span>
-              <span className="sb-nav-label">{m.label}</span>
-            </button>
-          ))}
-        </nav>
-
         {sessions.length > 0 && (
           <>
             <div className="sb-divider" />
             <div className="sb-section-title">History</div>
             <nav className="sb-nav sb-nav--scroll">
               {sessions.slice(0, 20).map(s => (
-                <button
-                  key={s.id}
-                  className={`sb-nav-item ${currentSessionId === s.id ? "sb-nav-item--active" : ""}`}
-                  onClick={() => loadSession(s.id)}
-                  title={s.title}
-                >
-                  <span className="sb-nav-icon">💬</span>
-                  <span className="sb-nav-label sb-nav-label--truncate">{s.title}</span>
-                </button>
+                <div key={s.id} className="sb-session-item">
+                  <button
+                    className={`sb-nav-item ${currentSessionId === s.id ? "sb-nav-item--active" : ""}`}
+                    onClick={() => loadSession(s.id)}
+                    title={s.title}
+                  >
+                    <span className="sb-nav-icon">💬</span>
+                    <span className="sb-nav-label sb-nav-label--truncate">{s.title}</span>
+                  </button>
+                  <button
+                    className="sb-session-delete"
+                    onClick={(e) => deleteSession(s.id, e)}
+                    title="Delete conversation"
+                  >
+                    🗑
+                  </button>
+                </div>
               ))}
             </nav>
           </>
@@ -406,21 +520,30 @@ export default function Dashboard() {
 
       {/* ─── Main ─── */}
       <main className="chat-main">
+        {/* Panel toggle bar */}
+        <div className="panel-toggle-bar">
+          <button
+            className="panel-toggle-btn"
+            onClick={() => setSidebarOpen(o => !o)}
+            title={sidebarOpen ? "Hide sidebar" : "Show sidebar"}
+          >
+            {sidebarOpen ? "◀" : "▶"}
+          </button>
+          <div className="panel-toggle-spacer" />
+          <button
+            className="panel-toggle-btn"
+            onClick={() => setRightPanelOpen(o => !o)}
+            title={rightPanelOpen ? "Hide documents" : "Show documents"}
+          >
+            {rightPanelOpen ? "▶" : "◀"}
+          </button>
+        </div>
         <div className="chat-scroll">
           {!hasStartedChat ? (
             <div className="welcome">
               <p className="welcome-eyebrow">Enterprise AI Suite</p>
               <h1 className="welcome-title">What can I help you with?</h1>
-              <p className="welcome-sub">Ask anything, or choose a module below to get started.</p>
-              <div className="quick-grid">
-                {MODULES.map(m => (
-                  <button key={m.id} className="quick-card" onClick={() => handleQuickAction(m.id)}>
-                    <span className="quick-card-icon">{m.icon}</span>
-                    <span className="quick-card-label">{m.label}</span>
-                    <span className="quick-card-desc">{m.desc}</span>
-                  </button>
-                ))}
-              </div>
+              <p className="welcome-sub">Ask anything to get started.</p>
             </div>
           ) : (
             <div className="messages">
@@ -434,12 +557,56 @@ export default function Dashboard() {
                       <div className="msg-bubble msg-bubble--typing">
                         <span className="dot" /><span className="dot" /><span className="dot" />
                       </div>
+                    ) : msg.role === "assistant" ? (
+                      <div className="msg-bubble msg-bubble--md">
+                        <ReactMarkdown>{msg.content}</ReactMarkdown>
+                      </div>
                     ) : (
                       <div className="msg-bubble">{msg.content}</div>
                     )}
                     {msg.content !== "" && (
                       <div className="msg-time">
                         {msg.timestamp.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                      </div>
+                    )}
+                    {/* RAG source citations — collapsible */}
+                    {msg.sources && msg.sources.length > 0 && (
+                      <div className="source-cards">
+                        <div className="source-cards-header">
+                          <span className="source-cards-title">
+                            📎 {msg.sources.length} source{msg.sources.length > 1 ? "s" : ""}
+                          </span>
+                          <button
+                            className="source-toggle-btn"
+                            onClick={() => toggleSources(msg.id)}
+                          >
+                            {expandedSources.has(msg.id) ? "▲ Hide" : "▼ Show"}
+                          </button>
+                        </div>
+                        {expandedSources.has(msg.id) && (
+                          <div className="source-list">
+                            {msg.sources.map((src, i) => {
+                              const cardKey = `${msg.id}-card-${i}`;
+                              const cardOpen = expandedSources.has(cardKey);
+                              return (
+                                <div key={i} className="source-card">
+                                  <div className="source-card-header">
+                                    <span className="source-card-filename">📄 {src.filename}</span>
+                                    <button
+                                      className="source-card-toggle"
+                                      onClick={() => toggleSources(cardKey)}
+                                    >
+                                      {cardOpen ? "▲ Hide" : "▼ Show"}
+                                    </button>
+                                  </div>
+                                  {cardOpen && (
+                                    <blockquote className="source-card-excerpt">{src.excerpt}</blockquote>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
@@ -450,13 +617,34 @@ export default function Dashboard() {
           )}
         </div>
 
-        {activeModule && (
+        {activeModule && activeModule !== "general" && (
           <div className="module-bar">
             <span className="module-chip">
               {MODULES.find(m => m.id === activeModule)?.icon}{" "}
               {MODULES.find(m => m.id === activeModule)?.label}
               <button className="module-chip-clear" onClick={() => setActiveModule(null)}>✕</button>
             </span>
+          </div>
+        )}
+
+        {/* Active documents notice */}
+        {documents.some(d => d.is_active && d.embedded_count > 0) && (
+          <div className="doc-active-bar">
+            <span className="doc-active-bar-text">
+              📎 {documents.filter(d => d.is_active && d.embedded_count > 0).length} document
+              {documents.filter(d => d.is_active && d.embedded_count > 0).length > 1 ? "s" : ""} attached
+              — AI may use them to answer your questions
+            </span>
+            <button
+              className="doc-active-bar-dismiss"
+              onClick={() =>
+                documents
+                  .filter(d => d.is_active)
+                  .forEach(d => toggleDocument(d.id))
+              }
+            >
+              Deactivate all documents
+            </button>
           </div>
         )}
 
@@ -485,6 +673,102 @@ export default function Dashboard() {
           <p className="input-hint">Enter to send · Shift+Enter for new line</p>
         </div>
       </main>
+
+      {/* ─── Document right panel ─── */}
+      <aside className={`doc-panel-right${rightPanelOpen ? "" : " doc-panel-right--collapsed"}`}>
+          <div className="doc-panel-hdr">
+            <span className="doc-panel-title">📁 Your Documents</span>
+            <div className="doc-panel-actions">
+              <button
+                className="doc-upload-btn"
+                onClick={() => docFileInputRef.current?.click()}
+                disabled={docUploading}
+              >
+                {docUploading ? "Uploading…" : "+ Add Files"}
+              </button>
+              <button
+                className="doc-upload-btn"
+                onClick={() => docFolderInputRef.current?.click()}
+                disabled={docUploading}
+              >
+                📂 Folder
+              </button>
+            </div>
+          </div>
+          {/* Hidden file inputs */}
+          <input
+            ref={docFileInputRef}
+            type="file"
+            multiple
+            accept=".pdf,.docx,.txt,.md"
+            hidden
+            onChange={e => uploadDocuments(e.target.files)}
+          />
+          <input
+            ref={docFolderInputRef}
+            type="file"
+            multiple
+            hidden
+            onChange={e => uploadDocuments(e.target.files)}
+          />
+          {documents.length === 0 ? (
+            <div className="doc-empty">No documents yet. Upload PDF, DOCX, TXT, or MD files.</div>
+          ) : (
+            <div className="doc-list">
+              {documents.map(doc => {
+                const needsRetry = doc.chunk_count > 0 && doc.embedded_count === 0;
+                const isProcessing = doc.chunk_count === 0;
+                const notReady = isProcessing || needsRetry;
+                const badgeClass = notReady
+                  ? "doc-badge--processing"
+                  : doc.is_active
+                  ? "doc-badge--active"
+                  : "doc-badge--inactive";
+                const badgeLabel = isProcessing
+                  ? "processing…"
+                  : needsRetry
+                  ? "needs retry"
+                  : doc.is_active
+                  ? "active"
+                  : "paused";
+                return (
+                  <div key={doc.id} className="doc-item">
+                    <div className="doc-item-info">
+                      <span className="doc-item-name" title={doc.filename}>{doc.filename}</span>
+                      <span className={`doc-badge ${badgeClass}`}>{badgeLabel}</span>
+                    </div>
+                    <div className="doc-item-actions">
+                      {notReady ? (
+                        <button
+                          className="doc-retry-btn"
+                          onClick={() => reprocessDocument(doc.id)}
+                          title="Retry embedding"
+                        >
+                          ↻ Retry
+                        </button>
+                      ) : (
+                        <button
+                          className="doc-toggle-btn"
+                          onClick={() => toggleDocument(doc.id)}
+                          title={doc.is_active ? "Pause" : "Resume"}
+                        >
+                          {doc.is_active ? "⏸" : "▶"}
+                        </button>
+                      )}
+                      <button
+                        className="doc-delete-btn-sm"
+                        onClick={() => deleteDocument(doc.id)}
+                        title="Delete document"
+                      >
+                        🗑
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </aside>
 
       {/* ─── Settings modal ─── */}
       {showSettings && (
@@ -648,6 +932,9 @@ export default function Dashboard() {
           </div>
         </div>
       )}
+
+      {/* Contributor badge */}
+      <div className="contributor-badge">Built by Charles &amp; Kian Yu</div>
     </div>
   );
 }
