@@ -18,15 +18,18 @@ from auth import create_token, get_current_user
 from database import AsyncSessionLocal, Base, engine, get_db
 from models import BugReport, ChatMessage, ChatSession, User
 
-# ── RAG — Document Router ─────────────────────────────────────────────────────
+# ── RAG — Document Routers ────────────────────────────────────────────────────
 from rag.retrieval import build_rag_system_prompt, retrieve_context
 from rag.router import router as rag_router
+from rag.shared_router import router as shared_rag_router
 # ─────────────────────────────────────────────────────────────────────────────
 
 UPLOAD_DIR = "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-ADMIN_EMAILS: set[str] = {"kianyugan@gmail.com"}
+ADMIN_EMAILS: set[str] = {
+    e.strip() for e in os.getenv("ADMIN_EMAIL", "").split(",") if e.strip()
+}
 
 ALLOWED_MODELS = {
     "claude-haiku-4-5-20251001",
@@ -78,8 +81,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ── RAG — mount document router ───────────────────────────────────────────────
+# ── RAG — mount document routers ──────────────────────────────────────────────
 app.include_router(rag_router)
+app.include_router(shared_rag_router)
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -117,8 +121,14 @@ async def register(data: RegisterRequest, db: AsyncSession = Depends(get_db)):
 
 
 @app.get("/api/me")
-async def get_me(user: str = Depends(get_current_user)):
-    return {"email": user, "is_admin": user in ADMIN_EMAILS}
+async def get_me(user: str = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(User).where(User.email == user))
+    user_row = result.scalar_one_or_none()
+    return {
+        "email": user,
+        "is_admin": user in ADMIN_EMAILS,
+        "department": user_row.department if user_row else None,
+    }
 
 
 # ── Chat (streaming SSE) ──────────────────────────────────────────────────────
@@ -191,7 +201,8 @@ async def chat_stream(
     # retrieve_context returns ("", []) when no documents exist or none are relevant,
     # so this is a no-op for users without documents or off-topic questions.
     sources: list[dict] = []
-    context_str, sources = await retrieve_context(data.message, user, db)
+    is_user_admin = user in ADMIN_EMAILS
+    context_str, sources = await retrieve_context(data.message, user, db, is_admin=is_user_admin)
     if context_str:
         system = build_rag_system_prompt(system, context_str)
     # ─────────────────────────────────────────────────────────────────────────
@@ -377,7 +388,50 @@ async def get_bugs(
     ]
 
 
-# ── Admin ─────────────────────────────────────────────────────────────────────
+# ── Admin — User Management ───────────────────────────────────────────────────
+
+@app.get("/api/admin/users")
+async def list_users(
+    user: str = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    if user not in ADMIN_EMAILS:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    result = await db.execute(select(User).order_by(User.created_at.asc()))
+    users = result.scalars().all()
+    return [
+        {
+            "email": u.email,
+            "department": u.department,
+            "created_at": u.created_at.isoformat(),
+        }
+        for u in users
+    ]
+
+
+class DepartmentUpdate(BaseModel):
+    department: Optional[str] = None
+
+
+@app.patch("/api/admin/users/{email}/department")
+async def set_user_department(
+    email: str,
+    data: DepartmentUpdate,
+    user: str = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    if user not in ADMIN_EMAILS:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    result = await db.execute(select(User).where(User.email == email))
+    target = result.scalar_one_or_none()
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    target.department = data.department.strip() if data.department else None
+    await db.commit()
+    return {"email": target.email, "department": target.department}
+
+
+# ── Admin — Bug Reports ───────────────────────────────────────────────────────
 
 class BugStatusUpdate(BaseModel):
     status: str  # "open" | "resolved"

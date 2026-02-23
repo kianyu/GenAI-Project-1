@@ -8,15 +8,15 @@ interface Message {
   role: "user" | "assistant";
   content: string;
   timestamp: Date;
-  sources?: SourceItem[];  // RAG source citations
+  sources?: SourceItem[];
 }
 
-// RAG source citation attached to an assistant message
 interface SourceItem {
   doc_id: number;
   filename: string;
   chunk_index: number;
   excerpt: string;
+  source_type?: "personal" | "shared";
 }
 
 interface Session {
@@ -34,7 +34,6 @@ interface BugReport {
   created_at: string;
 }
 
-// RAG document metadata
 interface DocItem {
   id: number;
   filename: string;
@@ -42,6 +41,43 @@ interface DocItem {
   chunk_count: number;
   embedded_count: number;
   file_size: number | null;
+  created_at: string;
+  folder_id: number | null;
+}
+
+interface FolderItem {
+  id: number;
+  name: string;
+  created_at: string;
+  doc_count: number;
+  total_size: number;
+}
+
+interface SharedDocItem {
+  id: number;
+  filename: string;
+  folder_id: number;
+  chunk_count: number;
+  embedded_count: number;
+  file_size: number | null;
+  is_visible: boolean;
+  is_rag_active: boolean;
+  user_rag_active: boolean;
+  created_at: string;
+}
+
+interface SharedFolderItem {
+  id: number;
+  name: string;
+  department: string;
+  created_at: string;
+  doc_count: number;
+  total_size: number;
+}
+
+interface UserItem {
+  email: string;
+  department: string | null;
   created_at: string;
 }
 
@@ -72,7 +108,6 @@ const MODULES = [
   },
 ];
 
-// Labels shown to users — no model names, just plain descriptions
 const MODELS = [
   { value: "claude-haiku-4-5-20251001", label: "⚡ Fast", desc: "Quick everyday questions" },
   { value: "claude-sonnet-4-6",          label: "✦ Smart", desc: "Best for most tasks"       },
@@ -80,6 +115,13 @@ const MODELS = [
 ];
 
 const API = "http://localhost:8000";
+const STORAGE_LIMIT = 512 * 1024 * 1024; // 0.5 GB
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
 
 export default function Dashboard() {
   const navigate = useNavigate();
@@ -97,6 +139,7 @@ export default function Dashboard() {
   // User + settings
   const [currentUser, setCurrentUser] = useState("");
   const [isAdmin, setIsAdmin] = useState(false);
+  const [department, setDepartment] = useState<string | null>(null);
   const [theme, setTheme] = useState<"dark" | "light">("dark");
   const [selectedModel, setSelectedModel] = useState(
     localStorage.getItem("selectedModel") || "claude-haiku-4-5-20251001"
@@ -104,7 +147,9 @@ export default function Dashboard() {
 
   // Modals
   const [showSettings, setShowSettings] = useState(false);
+  const [showHelp, setShowHelp] = useState(false);
   const [showBugModal, setShowBugModal] = useState(false);
+  const [showUsersModal, setShowUsersModal] = useState(false);
   const [bugView, setBugView] = useState<"submit" | "list">("submit");
 
   // Bug form
@@ -114,29 +159,61 @@ export default function Dashboard() {
   const [bugSubmitting, setBugSubmitting] = useState(false);
   const [bugSuccess, setBugSuccess] = useState(false);
 
-  // RAG — documents
+  // RAG — personal documents
   const [documents, setDocuments] = useState<DocItem[]>([]);
-  const [docUploading, setDocUploading] = useState(false);
+  const [folders, setFolders] = useState<FolderItem[]>([]);
+  const [storageUsed, setStorageUsed] = useState(0);
 
-  // RAG — which message IDs have their source cards expanded
+  // Personal folder UI state
+  const [expandedFolders, setExpandedFolders] = useState<Set<number>>(new Set());
+  const [creatingFolder, setCreatingFolder] = useState(false);
+  const [newFolderName, setNewFolderName] = useState("");
+  const [renamingFolderId, setRenamingFolderId] = useState<number | null>(null);
+  const [renamingFolderName, setRenamingFolderName] = useState("");
+
+  // Personal upload
+  const [uploadingFolderId, setUploadingFolderId] = useState<number | null>(null);
+  const uploadFolderIdRef = useRef<number | null>(null);
+
+  // RAG — shared documents
+  const [sharedDocs, setSharedDocs] = useState<SharedDocItem[]>([]);
+  const [sharedFolders, setSharedFolders] = useState<SharedFolderItem[]>([]);
+
+  // Shared folder UI state
+  const [expandedSharedFolders, setExpandedSharedFolders] = useState<Set<number>>(new Set());
+  const [creatingSharedFolder, setCreatingSharedFolder] = useState(false);
+  const [newSharedFolderName, setNewSharedFolderName] = useState("");
+  const [newSharedFolderDept, setNewSharedFolderDept] = useState("");
+  const [renamingSharedFolderId, setRenamingSharedFolderId] = useState<number | null>(null);
+  const [renamingSharedFolderName, setRenamingSharedFolderName] = useState("");
+
+  // Shared upload
+  const [uploadingSharedFolderId, setUploadingSharedFolderId] = useState<number | null>(null);
+  const uploadSharedFolderIdRef = useRef<number | null>(null);
+  const sharedDocFileInputRef = useRef<HTMLInputElement>(null);
+
+  // Admin — user management
+  const [adminUsers, setAdminUsers] = useState<UserItem[]>([]);
+  const [editingUserEmail, setEditingUserEmail] = useState<string | null>(null);
+  const [editingDeptValue, setEditingDeptValue] = useState("");
+
+  // File content preview
+  const [previewDoc, setPreviewDoc] = useState<{ id: number; filename: string; isShared?: boolean } | null>(null);
+  const [previewContent, setPreviewContent] = useState("");
+  const [previewTruncated, setPreviewTruncated] = useState(false);
+  const [previewLoading, setPreviewLoading] = useState(false);
+
+  // Source cards expanded state
   const [expandedSources, setExpandedSources] = useState<Set<string>>(new Set());
 
-  // Panel visibility toggles
+  // Panel visibility
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [rightPanelOpen, setRightPanelOpen] = useState(true);
-  const toggleSources = (msgId: string) => {
-    setExpandedSources(prev => {
-      const next = new Set(prev);
-      if (next.has(msgId)) next.delete(msgId); else next.add(msgId);
-      return next;
-    });
-  };
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const docFileInputRef = useRef<HTMLInputElement>(null);
-  const docFolderInputRef = useRef<HTMLInputElement>(null);
 
   const token = localStorage.getItem("access_token") || sessionStorage.getItem("access_token");
   const hasStartedChat = messages.length > 0;
@@ -152,14 +229,10 @@ export default function Dashboard() {
     fetchSessions();
     fetchMe();
     fetchDocuments();
-  }, []);
-
-  // Set webkitdirectory on the folder input (not a standard React prop)
-  useEffect(() => {
-    if (docFolderInputRef.current) {
-      docFolderInputRef.current.setAttribute("webkitdirectory", "");
-      docFolderInputRef.current.setAttribute("directory", "");
-    }
+    fetchFolders();
+    fetchStorage();
+    fetchSharedFolders();
+    fetchSharedDocs();
   }, []);
 
   useEffect(() => {
@@ -170,17 +243,60 @@ export default function Dashboard() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  // Poll for document ingestion progress while any doc is still processing/retrying
+  // Poll for document ingestion progress (personal)
   useEffect(() => {
-    const hasProcessing = documents.some(d => d.chunk_count === 0 || (d.chunk_count > 0 && d.embedded_count === 0));
+    const hasProcessing = documents.some(
+      d => d.chunk_count === 0 || (d.chunk_count > 0 && d.embedded_count === 0)
+    );
     if (!hasProcessing) return;
-    const timer = setInterval(fetchDocuments, 5000);
+    const timer = setInterval(() => {
+      fetchDocuments();
+      fetchFolders();
+      fetchStorage();
+    }, 5000);
     return () => clearInterval(timer);
   }, [documents]);
+
+  // Poll for shared document ingestion progress
+  useEffect(() => {
+    const hasProcessing = sharedDocs.some(
+      d => d.chunk_count === 0 || (d.chunk_count > 0 && d.embedded_count === 0)
+    );
+    if (!hasProcessing) return;
+    const timer = setInterval(() => {
+      fetchSharedDocs();
+      fetchSharedFolders();
+    }, 5000);
+    return () => clearInterval(timer);
+  }, [sharedDocs]);
 
   const authHeaders = (): Record<string, string> => ({
     Authorization: `Bearer ${token}`,
   });
+
+  const toggleSources = (key: string) => {
+    setExpandedSources(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  };
+
+  const toggleExpandFolder = (folderId: number) => {
+    setExpandedFolders(prev => {
+      const next = new Set(prev);
+      if (next.has(folderId)) next.delete(folderId); else next.add(folderId);
+      return next;
+    });
+  };
+
+  const toggleExpandSharedFolder = (folderId: number) => {
+    setExpandedSharedFolders(prev => {
+      const next = new Set(prev);
+      if (next.has(folderId)) next.delete(folderId); else next.add(folderId);
+      return next;
+    });
+  };
 
   // ── User / admin ──────────────────────────────────────────────────────────
   const fetchMe = async () => {
@@ -188,6 +304,8 @@ export default function Dashboard() {
       const res = await fetch(`${API}/api/me`, { headers: authHeaders() });
       const data = await res.json();
       setIsAdmin(data.is_admin || false);
+      setDepartment(data.department || null);
+      if (data.is_admin) fetchAdminUsers();
     } catch { /* silent */ }
   };
 
@@ -296,7 +414,6 @@ export default function Dashboard() {
                 return [{ id: event.session_id, title: event.title, updated_at: new Date().toISOString() }, ...prev];
               });
             } else if (event.type === "sources") {
-              // RAG: attach source citations to the assistant message
               setMessages(prev =>
                 prev.map(m => m.id === assistantMsgId ? { ...m, sources: event.sources } : m)
               );
@@ -322,8 +439,6 @@ export default function Dashboard() {
     }
   };
 
-
-
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
@@ -337,7 +452,7 @@ export default function Dashboard() {
     e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px";
   };
 
-  // ── RAG — Documents ───────────────────────────────────────────────────────
+  // ── RAG — Personal Documents ───────────────────────────────────────────────
   const fetchDocuments = async () => {
     try {
       const res = await fetch(`${API}/api/documents/`, { headers: authHeaders() });
@@ -346,11 +461,82 @@ export default function Dashboard() {
     } catch { /* silent */ }
   };
 
-  const uploadDocuments = async (files: FileList | null) => {
+  const fetchFolders = async () => {
+    try {
+      const res = await fetch(`${API}/api/documents/folders`, { headers: authHeaders() });
+      const data = await res.json();
+      setFolders(Array.isArray(data) ? data : []);
+    } catch { /* silent */ }
+  };
+
+  const fetchStorage = async () => {
+    try {
+      const res = await fetch(`${API}/api/documents/storage`, { headers: authHeaders() });
+      const data = await res.json();
+      setStorageUsed(data.used_bytes || 0);
+    } catch { /* silent */ }
+  };
+
+  const refreshAll = () => {
+    fetchDocuments();
+    fetchFolders();
+    fetchStorage();
+  };
+
+  // ── Personal Folder CRUD ──────────────────────────────────────────────────
+  const createFolder = async (name: string) => {
+    if (!name.trim()) return;
+    await fetch(`${API}/api/documents/folders`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeaders() },
+      body: JSON.stringify({ name }),
+    });
+    setCreatingFolder(false);
+    setNewFolderName("");
+    fetchFolders();
+  };
+
+  const renameFolder = async (folderId: number, name: string) => {
+    if (!name.trim()) { setRenamingFolderId(null); return; }
+    await fetch(`${API}/api/documents/folders/${folderId}/rename`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", ...authHeaders() },
+      body: JSON.stringify({ name }),
+    });
+    setRenamingFolderId(null);
+    fetchFolders();
+  };
+
+  const deleteFolder = async (folderId: number) => {
+    const folder = folders.find(f => f.id === folderId);
+    const count = folder?.doc_count ?? 0;
+    const msg = count > 0
+      ? `Delete folder and all ${count} file${count > 1 ? "s" : ""} inside? This cannot be undone.`
+      : "Delete this empty folder?";
+    if (!window.confirm(msg)) return;
+    await fetch(`${API}/api/documents/folders/${folderId}`, {
+      method: "DELETE",
+      headers: authHeaders(),
+    });
+    refreshAll();
+  };
+
+  const toggleFolder = async (folderId: number, active: boolean) => {
+    await fetch(`${API}/api/documents/folders/${folderId}/toggle`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", ...authHeaders() },
+      body: JSON.stringify({ active }),
+    });
+    fetchDocuments();
+  };
+
+  // ── Personal Upload ───────────────────────────────────────────────────────
+  const uploadToFolder = async (files: FileList | null, folderId: number) => {
     if (!files || files.length === 0) return;
-    setDocUploading(true);
+    setUploadingFolderId(folderId);
     const form = new FormData();
     for (const f of files) form.append("files", f);
+    form.append("folder_id", String(folderId));
     try {
       await fetch(`${API}/api/documents/`, {
         method: "POST",
@@ -358,10 +544,14 @@ export default function Dashboard() {
         body: form,
       });
     } catch { /* silent */ }
-    setDocUploading(false);
-    fetchDocuments();
+    await fetchDocuments();
+    setUploadingFolderId(null);
+    fetchFolders();
+    fetchStorage();
+    setExpandedFolders(prev => new Set(prev).add(folderId));
   };
 
+  // ── Personal Document Actions ─────────────────────────────────────────────
   const toggleDocument = async (docId: number) => {
     await fetch(`${API}/api/documents/${docId}/toggle`, {
       method: "PATCH",
@@ -376,16 +566,199 @@ export default function Dashboard() {
       method: "DELETE",
       headers: authHeaders(),
     });
-    fetchDocuments();
+    refreshAll();
   };
 
-  // ── RAG — Reprocess a document whose embeddings failed ─────────────────────
   const reprocessDocument = async (docId: number) => {
     await fetch(`${API}/api/documents/${docId}/reprocess`, {
       method: "POST",
       headers: authHeaders(),
     });
     fetchDocuments();
+  };
+
+  // ── RAG — Shared Documents ────────────────────────────────────────────────
+  const fetchSharedFolders = async () => {
+    try {
+      const res = await fetch(`${API}/api/shared-documents/folders`, { headers: authHeaders() });
+      const data = await res.json();
+      setSharedFolders(Array.isArray(data) ? data : []);
+    } catch { /* silent */ }
+  };
+
+  const fetchSharedDocs = async () => {
+    try {
+      const res = await fetch(`${API}/api/shared-documents/`, { headers: authHeaders() });
+      const data = await res.json();
+      setSharedDocs(Array.isArray(data) ? data : []);
+    } catch { /* silent */ }
+  };
+
+  const refreshShared = () => {
+    fetchSharedFolders();
+    fetchSharedDocs();
+  };
+
+  // ── Shared Folder CRUD (admin) ────────────────────────────────────────────
+  const createSharedFolder = async (name: string, dept: string) => {
+    if (!name.trim() || !dept.trim()) return;
+    await fetch(`${API}/api/shared-documents/folders`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeaders() },
+      body: JSON.stringify({ name, department: dept }),
+    });
+    setCreatingSharedFolder(false);
+    setNewSharedFolderName("");
+    setNewSharedFolderDept("");
+    fetchSharedFolders();
+  };
+
+  const renameSharedFolder = async (folderId: number, name: string) => {
+    if (!name.trim()) { setRenamingSharedFolderId(null); return; }
+    await fetch(`${API}/api/shared-documents/folders/${folderId}/rename`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", ...authHeaders() },
+      body: JSON.stringify({ name }),
+    });
+    setRenamingSharedFolderId(null);
+    fetchSharedFolders();
+  };
+
+  const deleteSharedFolder = async (folderId: number) => {
+    const folder = sharedFolders.find(f => f.id === folderId);
+    const count = folder?.doc_count ?? 0;
+    const msg = count > 0
+      ? `Delete shared folder and all ${count} file${count > 1 ? "s" : ""} inside? This cannot be undone.`
+      : "Delete this empty shared folder?";
+    if (!window.confirm(msg)) return;
+    await fetch(`${API}/api/shared-documents/folders/${folderId}`, {
+      method: "DELETE",
+      headers: authHeaders(),
+    });
+    refreshShared();
+  };
+
+  // ── Shared Upload (admin) ─────────────────────────────────────────────────
+  const uploadToSharedFolder = async (files: FileList | null, folderId: number) => {
+    if (!files || files.length === 0) return;
+    setUploadingSharedFolderId(folderId);
+    const form = new FormData();
+    for (const f of files) form.append("files", f);
+    form.append("folder_id", String(folderId));
+    try {
+      await fetch(`${API}/api/shared-documents/`, {
+        method: "POST",
+        headers: authHeaders(),
+        body: form,
+      });
+    } catch { /* silent */ }
+    await fetchSharedDocs();
+    setUploadingSharedFolderId(null);
+    fetchSharedFolders();
+    setExpandedSharedFolders(prev => new Set(prev).add(folderId));
+  };
+
+  // ── Shared Document Actions ───────────────────────────────────────────────
+  const deleteSharedDocument = async (docId: number) => {
+    if (!window.confirm("Delete this shared document and all its data? This cannot be undone.")) return;
+    await fetch(`${API}/api/shared-documents/${docId}`, {
+      method: "DELETE",
+      headers: authHeaders(),
+    });
+    refreshShared();
+  };
+
+  const toggleSharedVisibility = async (docId: number) => {
+    const res = await fetch(`${API}/api/shared-documents/${docId}/toggle-visibility`, {
+      method: "PATCH",
+      headers: authHeaders(),
+    });
+    const data = await res.json();
+    setSharedDocs(prev => prev.map(d => d.id === docId ? { ...d, is_visible: data.is_visible } : d));
+  };
+
+  const toggleSharedRag = async (docId: number) => {
+    const res = await fetch(`${API}/api/shared-documents/${docId}/toggle-rag`, {
+      method: "PATCH",
+      headers: authHeaders(),
+    });
+    const data = await res.json();
+    setSharedDocs(prev => prev.map(d => d.id === docId ? { ...d, is_rag_active: data.is_rag_active } : d));
+  };
+
+  const toggleSharedUserPref = async (docId: number) => {
+    const res = await fetch(`${API}/api/shared-documents/${docId}/toggle-user`, {
+      method: "PATCH",
+      headers: authHeaders(),
+    });
+    const data = await res.json();
+    setSharedDocs(prev => prev.map(d => d.id === docId ? { ...d, user_rag_active: data.user_rag_active } : d));
+  };
+
+  const reprocessSharedDocument = async (docId: number) => {
+    await fetch(`${API}/api/shared-documents/${docId}/reprocess`, {
+      method: "POST",
+      headers: authHeaders(),
+    });
+    fetchSharedDocs();
+  };
+
+  // ── Content preview ───────────────────────────────────────────────────────
+  const openPreview = async (doc: DocItem) => {
+    setPreviewDoc({ id: doc.id, filename: doc.filename, isShared: false });
+    setPreviewContent("");
+    setPreviewTruncated(false);
+    setPreviewLoading(true);
+    try {
+      const res = await fetch(`${API}/api/documents/${doc.id}/content`, {
+        headers: authHeaders(),
+      });
+      const data = await res.json();
+      setPreviewContent(data.content || "(empty file)");
+      setPreviewTruncated(data.truncated || false);
+    } catch {
+      setPreviewContent("Failed to load content.");
+    } finally {
+      setPreviewLoading(false);
+    }
+  };
+
+  const openSharedPreview = async (doc: SharedDocItem) => {
+    setPreviewDoc({ id: doc.id, filename: doc.filename, isShared: true });
+    setPreviewContent("");
+    setPreviewTruncated(false);
+    setPreviewLoading(true);
+    try {
+      const res = await fetch(`${API}/api/shared-documents/${doc.id}/content`, {
+        headers: authHeaders(),
+      });
+      const data = await res.json();
+      setPreviewContent(data.content || "(empty file)");
+      setPreviewTruncated(data.truncated || false);
+    } catch {
+      setPreviewContent("Failed to load content.");
+    } finally {
+      setPreviewLoading(false);
+    }
+  };
+
+  // ── Admin — User Management ───────────────────────────────────────────────
+  const fetchAdminUsers = async () => {
+    try {
+      const res = await fetch(`${API}/api/admin/users`, { headers: authHeaders() });
+      const data = await res.json();
+      setAdminUsers(Array.isArray(data) ? data : []);
+    } catch { /* silent */ }
+  };
+
+  const saveUserDepartment = async (email: string, dept: string) => {
+    await fetch(`${API}/api/admin/users/${encodeURIComponent(email)}/department`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", ...authHeaders() },
+      body: JSON.stringify({ department: dept.trim() || null }),
+    });
+    setEditingUserEmail(null);
+    fetchAdminUsers();
   };
 
   // ── Bug reports ───────────────────────────────────────────────────────────
@@ -450,6 +823,101 @@ export default function Dashboard() {
     navigate("/");
   };
 
+  // ── Derived data ──────────────────────────────────────────────────────────
+  const storagePercent = Math.min((storageUsed / STORAGE_LIMIT) * 100, 100);
+  const storageNearLimit = storagePercent >= 85;
+  const uncategorizedDocs = documents.filter(d => d.folder_id === null);
+
+  // ── Shared doc rendering helper ───────────────────────────────────────────
+  const renderSharedDocItem = (doc: SharedDocItem) => {
+    const needsRetry = doc.chunk_count > 0 && doc.embedded_count === 0;
+    const isProcessing = doc.chunk_count === 0;
+    const notReady = isProcessing || needsRetry;
+
+    // Effective RAG state for the current viewer
+    const effectiveActive = doc.user_rag_active;
+
+    const badgeClass = notReady
+      ? "doc-badge--processing"
+      : !doc.is_visible
+      ? "doc-badge--inactive"
+      : effectiveActive
+      ? "doc-badge--active"
+      : "doc-badge--inactive";
+    const badgeLabel = isProcessing
+      ? "processing…"
+      : needsRetry
+      ? "retry"
+      : !doc.is_visible
+      ? "unshared"
+      : effectiveActive
+      ? "attached"
+      : "detached";
+
+    return (
+      <div key={doc.id} className="doc-item">
+        <div className="doc-item-info">
+          <button
+            className="doc-item-name-btn"
+            onClick={() => openSharedPreview(doc)}
+            title={`View: ${doc.filename}`}
+          >
+            📄 {doc.filename}
+          </button>
+          <span className={`doc-badge ${badgeClass}`}>{badgeLabel}</span>
+        </div>
+        <div className="doc-item-actions">
+          {notReady ? (
+            isAdmin && (
+              <button
+                className="doc-retry-btn"
+                onClick={() => reprocessSharedDocument(doc.id)}
+                title="Retry embedding"
+              >
+                ↻
+              </button>
+            )
+          ) : isAdmin ? (
+            <>
+              {/* Admin toggle 1: visibility */}
+              <button
+                className={`doc-toggle-btn doc-toggle-visibility${doc.is_visible ? " doc-toggle-on" : " doc-toggle-off"}`}
+                onClick={() => toggleSharedVisibility(doc.id)}
+                title={doc.is_visible ? "Share to users" : "Unshare from users"}
+              >
+                {doc.is_visible ? "👁" : "🚫"}
+              </button>
+              {/* Admin toggle 2: personal attach preference (only affects admin's own chat) */}
+              <button
+                className="doc-toggle-btn"
+                onClick={() => toggleSharedUserPref(doc.id)}
+                title={doc.user_rag_active ? "Detach" : "Attach"}
+              >
+                {doc.user_rag_active ? "⏸" : "▶"}
+              </button>
+              <button
+                className="doc-delete-btn-sm"
+                onClick={() => deleteSharedDocument(doc.id)}
+                title="Delete"
+              >
+                🗑
+              </button>
+            </>
+          ) : (
+            /* User toggle: personal attach preference */
+            <button
+              className="doc-toggle-btn"
+              onClick={() => toggleSharedUserPref(doc.id)}
+              title={doc.user_rag_active ? "Detach" : "Attach"}
+            >
+              {doc.user_rag_active ? "⏸" : "▶"}
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  };
+
   // ── Render ────────────────────────────────────────────────────────────────
   return (
     <div className="dashboard">
@@ -470,6 +938,7 @@ export default function Dashboard() {
             <div className="sb-user-email" title={currentUser}>{currentUser}</div>
             <div className="sb-user-meta">
               {isAdmin && <span className="sb-admin-badge">Admin</span>}
+              {department && <span className="sb-dept-badge">{department}</span>}
               <button className="sb-signout" onClick={logout}>Sign out</button>
             </div>
           </div>
@@ -509,7 +978,7 @@ export default function Dashboard() {
           <button className="sb-footer-btn" onClick={() => setShowSettings(true)}>
             <span>⚙️</span> Settings
           </button>
-          <button className="sb-footer-btn">
+          <button className="sb-footer-btn" onClick={() => setShowHelp(true)}>
             <span>❓</span> Help
           </button>
           <button className="sb-footer-btn" onClick={() => openBugModal("submit")}>
@@ -538,6 +1007,7 @@ export default function Dashboard() {
             {rightPanelOpen ? "▶" : "◀"}
           </button>
         </div>
+
         <div className="chat-scroll">
           {!hasStartedChat ? (
             <div className="welcome">
@@ -569,7 +1039,7 @@ export default function Dashboard() {
                         {msg.timestamp.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
                       </div>
                     )}
-                    {/* RAG source citations — collapsible */}
+                    {/* RAG source citations */}
                     {msg.sources && msg.sources.length > 0 && (
                       <div className="source-cards">
                         <div className="source-cards-header">
@@ -591,7 +1061,12 @@ export default function Dashboard() {
                               return (
                                 <div key={i} className="source-card">
                                   <div className="source-card-header">
-                                    <span className="source-card-filename">📄 {src.filename}</span>
+                                    <span className="source-card-filename">
+                                      {src.source_type === "shared" ? "🌐" : "📄"} {src.filename}
+                                      {src.source_type === "shared" && (
+                                        <span className="source-shared-badge">shared</span>
+                                      )}
+                                    </span>
                                     <button
                                       className="source-card-toggle"
                                       onClick={() => toggleSources(cardKey)}
@@ -627,23 +1102,52 @@ export default function Dashboard() {
           </div>
         )}
 
-        {/* Active documents notice */}
+        {/* Active personal documents notice */}
         {documents.some(d => d.is_active && d.embedded_count > 0) && (
           <div className="doc-active-bar">
             <span className="doc-active-bar-text">
               📎 {documents.filter(d => d.is_active && d.embedded_count > 0).length} document
               {documents.filter(d => d.is_active && d.embedded_count > 0).length > 1 ? "s" : ""} attached
               — AI may use them to answer your questions
+              <span
+                className="doc-active-bar-hint"
+                title="Attached documents may cause the AI to give irrelevant or misleading answers. For the best response, deactivate as many unrelated documents as possible."
+              >?</span>
             </span>
             <button
               className="doc-active-bar-dismiss"
               onClick={() =>
-                documents
-                  .filter(d => d.is_active)
-                  .forEach(d => toggleDocument(d.id))
+                documents.filter(d => d.is_active).forEach(d => toggleDocument(d.id))
               }
             >
-              Deactivate all documents
+              Detach all documents
+            </button>
+          </div>
+        )}
+
+        {/* Active shared documents notice */}
+        {sharedDocs.some(d => d.is_visible && d.user_rag_active && d.embedded_count > 0) && (
+          <div className="doc-active-bar doc-active-bar--shared">
+            <span className="doc-active-bar-text">
+              🌐 {sharedDocs.filter(d => d.is_visible && d.user_rag_active && d.embedded_count > 0).length} shared document
+              {sharedDocs.filter(d => d.is_visible && d.user_rag_active && d.embedded_count > 0).length > 1 ? "s" : ""} attached
+              — AI may use them to answer your questions
+              <span
+                className="doc-active-bar-hint"
+                title="Attached documents may cause the AI to give irrelevant or misleading answers. For the best response, deactivate as many unrelated documents as possible."
+              >?</span>
+            </span>
+            <button
+              className="doc-active-bar-dismiss"
+              onClick={async () => {
+                const active = sharedDocs.filter(
+                  d => d.is_visible && d.user_rag_active && d.embedded_count > 0
+                );
+                await Promise.all(active.map(d => toggleSharedUserPref(d.id)));
+                fetchSharedDocs();
+              }}
+            >
+              Detach all shared documents
             </button>
           </div>
         )}
@@ -676,99 +1180,619 @@ export default function Dashboard() {
 
       {/* ─── Document right panel ─── */}
       <aside className={`doc-panel-right${rightPanelOpen ? "" : " doc-panel-right--collapsed"}`}>
-          <div className="doc-panel-hdr">
-            <span className="doc-panel-title">📁 Your Documents</span>
-            <div className="doc-panel-actions">
-              <button
-                className="doc-upload-btn"
-                onClick={() => docFileInputRef.current?.click()}
-                disabled={docUploading}
-              >
-                {docUploading ? "Uploading…" : "+ Add Files"}
-              </button>
-              <button
-                className="doc-upload-btn"
-                onClick={() => docFolderInputRef.current?.click()}
-                disabled={docUploading}
-              >
-                📂 Folder
-              </button>
-            </div>
+
+        {/* ── My Documents section ── */}
+        <div className="doc-panel-hdr">
+          <span className="doc-panel-title">📁 My Documents</span>
+          <button
+            className="doc-upload-btn"
+            onClick={() => { setCreatingFolder(true); setNewFolderName(""); }}
+          >
+            + New Folder
+          </button>
+        </div>
+
+        {/* Personal storage bar */}
+        <div className="doc-storage-wrap">
+          <div className="doc-storage-labels">
+            <span>{formatBytes(storageUsed)} used</span>
+            <span className={storageNearLimit ? "doc-storage-warn" : ""}>
+              {formatBytes(STORAGE_LIMIT - storageUsed)} left
+            </span>
           </div>
-          {/* Hidden file inputs */}
-          <input
-            ref={docFileInputRef}
-            type="file"
-            multiple
-            accept=".pdf,.docx,.txt,.md"
-            hidden
-            onChange={e => uploadDocuments(e.target.files)}
-          />
-          <input
-            ref={docFolderInputRef}
-            type="file"
-            multiple
-            hidden
-            onChange={e => uploadDocuments(e.target.files)}
-          />
-          {documents.length === 0 ? (
-            <div className="doc-empty">No documents yet. Upload PDF, DOCX, TXT, or MD files.</div>
-          ) : (
-            <div className="doc-list">
-              {documents.map(doc => {
-                const needsRetry = doc.chunk_count > 0 && doc.embedded_count === 0;
-                const isProcessing = doc.chunk_count === 0;
-                const notReady = isProcessing || needsRetry;
-                const badgeClass = notReady
-                  ? "doc-badge--processing"
-                  : doc.is_active
-                  ? "doc-badge--active"
-                  : "doc-badge--inactive";
-                const badgeLabel = isProcessing
-                  ? "processing…"
-                  : needsRetry
-                  ? "needs retry"
-                  : doc.is_active
-                  ? "active"
-                  : "paused";
-                return (
-                  <div key={doc.id} className="doc-item">
-                    <div className="doc-item-info">
-                      <span className="doc-item-name" title={doc.filename}>{doc.filename}</span>
-                      <span className={`doc-badge ${badgeClass}`}>{badgeLabel}</span>
-                    </div>
-                    <div className="doc-item-actions">
-                      {notReady ? (
+          <div className="doc-storage-track">
+            <div
+              className={`doc-storage-fill${storageNearLimit ? " doc-storage-fill--warn" : ""}`}
+              style={{ width: `${storagePercent}%` }}
+            />
+          </div>
+        </div>
+
+        {/* New personal folder inline input */}
+        {creatingFolder && (
+          <div className="doc-folder-create">
+            <input
+              className="doc-folder-create-input"
+              autoFocus
+              placeholder="Folder name…"
+              value={newFolderName}
+              onChange={e => setNewFolderName(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === "Enter" && newFolderName.trim()) createFolder(newFolderName.trim());
+                if (e.key === "Escape") { setCreatingFolder(false); setNewFolderName(""); }
+              }}
+            />
+            <button
+              className="doc-folder-create-btn"
+              onClick={() => createFolder(newFolderName.trim())}
+              disabled={!newFolderName.trim()}
+            >
+              Create
+            </button>
+            <button
+              className="doc-folder-create-cancel"
+              onClick={() => { setCreatingFolder(false); setNewFolderName(""); }}
+            >
+              ✕
+            </button>
+          </div>
+        )}
+
+        {/* Personal folder list */}
+        {folders.length === 0 && !creatingFolder ? (
+          <div className="doc-empty">
+            No folders yet.<br />Create a folder to start uploading documents.
+          </div>
+        ) : (
+          <div className="doc-folder-list">
+            {folders.map(folder => {
+              const folderDocs = documents.filter(d => d.folder_id === folder.id);
+              const isExpanded = expandedFolders.has(folder.id);
+              const isRenaming = renamingFolderId === folder.id;
+              const isUploading = uploadingFolderId === folder.id;
+              const isProcessingAny = folderDocs.some(d => d.chunk_count === 0);
+              const allActive = folderDocs.length > 0 && folderDocs.every(d => d.is_active);
+
+              return (
+                <div key={folder.id} className="doc-folder">
+                  <div className="doc-folder-hdr">
+                    <button
+                      className="doc-folder-chevron"
+                      onClick={() => toggleExpandFolder(folder.id)}
+                      title={isExpanded ? "Collapse" : "Expand"}
+                    >
+                      {isExpanded ? "▼" : "▶"}
+                    </button>
+
+                    {isRenaming ? (
+                      <input
+                        className="doc-folder-rename-input"
+                        autoFocus
+                        value={renamingFolderName}
+                        onChange={e => setRenamingFolderName(e.target.value)}
+                        onKeyDown={e => {
+                          if (e.key === "Enter") renameFolder(folder.id, renamingFolderName);
+                          if (e.key === "Escape") setRenamingFolderId(null);
+                        }}
+                        onBlur={() => renameFolder(folder.id, renamingFolderName)}
+                      />
+                    ) : (
+                      <span
+                        className="doc-folder-name"
+                        title={folder.name}
+                        onDoubleClick={() => {
+                          setRenamingFolderId(folder.id);
+                          setRenamingFolderName(folder.name);
+                        }}
+                      >
+                        {folder.name}
+                      </span>
+                    )}
+
+                    <span className="doc-folder-count">({folderDocs.length})</span>
+
+                    <div className="doc-folder-actions">
+                      {folderDocs.length > 0 && (
                         <button
-                          className="doc-retry-btn"
-                          onClick={() => reprocessDocument(doc.id)}
-                          title="Retry embedding"
+                          className="doc-folder-btn"
+                          onClick={() => toggleFolder(folder.id, !allActive)}
+                          title={allActive ? "Detach all" : "Attach all"}
                         >
-                          ↻ Retry
-                        </button>
-                      ) : (
-                        <button
-                          className="doc-toggle-btn"
-                          onClick={() => toggleDocument(doc.id)}
-                          title={doc.is_active ? "Pause" : "Resume"}
-                        >
-                          {doc.is_active ? "⏸" : "▶"}
+                          {allActive ? "⏸" : "▶"}
                         </button>
                       )}
                       <button
-                        className="doc-delete-btn-sm"
-                        onClick={() => deleteDocument(doc.id)}
-                        title="Delete document"
+                        className="doc-folder-btn"
+                        onClick={() => {
+                          setRenamingFolderId(folder.id);
+                          setRenamingFolderName(folder.name);
+                        }}
+                        title="Rename folder"
+                      >
+                        ✏
+                      </button>
+                      <button
+                        className="doc-folder-btn doc-folder-btn--danger"
+                        onClick={() => deleteFolder(folder.id)}
+                        title="Delete folder"
                       >
                         🗑
                       </button>
                     </div>
                   </div>
-                );
-              })}
-            </div>
+
+                  {isExpanded && (
+                    <div className="doc-folder-body">
+                      <button
+                        className="doc-add-files-btn"
+                        disabled={isUploading}
+                        onClick={() => {
+                          uploadFolderIdRef.current = folder.id;
+                          if (docFileInputRef.current) {
+                            docFileInputRef.current.value = "";
+                            docFileInputRef.current.click();
+                          }
+                        }}
+                      >
+                        {isUploading ? "Uploading…" : "+ Add Files"}
+                      </button>
+
+                      {(isUploading || isProcessingAny) && (
+                        <div className="doc-uploading-row">
+                          <span className="doc-uploading-spinner" />
+                          {isUploading ? "Uploading files…" : "Processing files…"}
+                        </div>
+                      )}
+
+                      {folderDocs.length === 0 && !isUploading ? (
+                        <div className="doc-folder-empty">No files yet.</div>
+                      ) : (
+                        folderDocs.map(doc => {
+                          const needsRetry = doc.chunk_count > 0 && doc.embedded_count === 0;
+                          const isProcessing = doc.chunk_count === 0;
+                          const notReady = isProcessing || needsRetry;
+                          const badgeClass = notReady
+                            ? "doc-badge--processing"
+                            : doc.is_active
+                            ? "doc-badge--active"
+                            : "doc-badge--inactive";
+                          const badgeLabel = isProcessing
+                            ? "processing…"
+                            : needsRetry
+                            ? "retry"
+                            : doc.is_active
+                            ? "attached"
+                            : "detached";
+                          return (
+                            <div key={doc.id} className="doc-item">
+                              <div className="doc-item-info">
+                                <button
+                                  className="doc-item-name-btn"
+                                  onClick={() => openPreview(doc)}
+                                  title={`View: ${doc.filename}`}
+                                >
+                                  📄 {doc.filename}
+                                </button>
+                                <span className={`doc-badge ${badgeClass}`}>{badgeLabel}</span>
+                              </div>
+                              <div className="doc-item-actions">
+                                {notReady ? (
+                                  <button
+                                    className="doc-retry-btn"
+                                    onClick={() => reprocessDocument(doc.id)}
+                                    title="Retry embedding"
+                                  >
+                                    ↻
+                                  </button>
+                                ) : (
+                                  <button
+                                    className="doc-toggle-btn"
+                                    onClick={() => toggleDocument(doc.id)}
+                                    title={doc.is_active ? "Detach" : "Attach"}
+                                  >
+                                    {doc.is_active ? "⏸" : "▶"}
+                                  </button>
+                                )}
+                                <button
+                                  className="doc-delete-btn-sm"
+                                  onClick={() => deleteDocument(doc.id)}
+                                  title="Delete"
+                                >
+                                  🗑
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+
+            {/* Uncategorized docs */}
+            {uncategorizedDocs.length > 0 && (
+              <div className="doc-folder doc-folder--uncategorized">
+                <div className="doc-folder-hdr">
+                  <button
+                    className="doc-folder-chevron"
+                    onClick={() => toggleExpandFolder(-1)}
+                  >
+                    {expandedFolders.has(-1) ? "▼" : "▶"}
+                  </button>
+                  <span className="doc-folder-name">Uncategorized</span>
+                  <span className="doc-folder-count">({uncategorizedDocs.length})</span>
+                </div>
+                {expandedFolders.has(-1) && (
+                  <div className="doc-folder-body">
+                    {uncategorizedDocs.map(doc => {
+                      const needsRetry = doc.chunk_count > 0 && doc.embedded_count === 0;
+                      const isProcessing = doc.chunk_count === 0;
+                      const notReady = isProcessing || needsRetry;
+                      const badgeClass = notReady ? "doc-badge--processing" : doc.is_active ? "doc-badge--active" : "doc-badge--inactive";
+                      const badgeLabel = isProcessing ? "processing…" : needsRetry ? "retry" : doc.is_active ? "attached" : "detached";
+                      return (
+                        <div key={doc.id} className="doc-item">
+                          <div className="doc-item-info">
+                            <button className="doc-item-name-btn" onClick={() => openPreview(doc)} title={doc.filename}>
+                              📄 {doc.filename}
+                            </button>
+                            <span className={`doc-badge ${badgeClass}`}>{badgeLabel}</span>
+                          </div>
+                          <div className="doc-item-actions">
+                            {notReady ? (
+                              <button className="doc-retry-btn" onClick={() => reprocessDocument(doc.id)}>↻</button>
+                            ) : (
+                              <button className="doc-toggle-btn" onClick={() => toggleDocument(doc.id)} title={doc.is_active ? "Detach" : "Attach"}>
+                                {doc.is_active ? "⏸" : "▶"}
+                              </button>
+                            )}
+                            <button className="doc-delete-btn-sm" onClick={() => deleteDocument(doc.id)}>🗑</button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Hidden personal file input */}
+        <input
+          ref={docFileInputRef}
+          type="file"
+          multiple
+          accept=".pdf,.docx,.txt,.md"
+          hidden
+          onChange={e => {
+            if (uploadFolderIdRef.current !== null) {
+              uploadToFolder(e.target.files, uploadFolderIdRef.current);
+            }
+          }}
+        />
+
+        {/* ── Shared Documents section ── */}
+        <div className="shared-section-header">
+          <span className="doc-panel-title">🌐 Shared Documents</span>
+          {isAdmin && (
+            <button
+              className="doc-upload-btn"
+              onClick={() => { setCreatingSharedFolder(true); setNewSharedFolderName(""); setNewSharedFolderDept(""); }}
+            >
+              + New Folder
+            </button>
           )}
-        </aside>
+        </div>
+
+        {!isAdmin && !department && (
+          <div className="doc-empty">No department assigned.<br />Ask your admin to assign your department.</div>
+        )}
+
+        {/* New shared folder inline form */}
+        {isAdmin && creatingSharedFolder && (
+          <div className="doc-folder-create doc-folder-create--shared">
+            <input
+              className="doc-folder-create-input"
+              autoFocus
+              placeholder="Folder name…"
+              value={newSharedFolderName}
+              onChange={e => setNewSharedFolderName(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === "Escape") { setCreatingSharedFolder(false); }
+              }}
+            />
+            <input
+              className="doc-folder-create-input"
+              placeholder="Department (e.g. Engineering)"
+              value={newSharedFolderDept}
+              onChange={e => setNewSharedFolderDept(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === "Enter" && newSharedFolderName.trim() && newSharedFolderDept.trim())
+                  createSharedFolder(newSharedFolderName.trim(), newSharedFolderDept.trim());
+                if (e.key === "Escape") { setCreatingSharedFolder(false); }
+              }}
+            />
+            <button
+              className="doc-folder-create-btn"
+              onClick={() => createSharedFolder(newSharedFolderName.trim(), newSharedFolderDept.trim())}
+              disabled={!newSharedFolderName.trim() || !newSharedFolderDept.trim()}
+            >
+              Create
+            </button>
+            <button
+              className="doc-folder-create-cancel"
+              onClick={() => setCreatingSharedFolder(false)}
+            >
+              ✕
+            </button>
+          </div>
+        )}
+
+        {/* Shared folder list */}
+        {sharedFolders.length === 0 && !creatingSharedFolder ? (
+          (isAdmin || department) && (
+            <div className="doc-empty">
+              {isAdmin ? "No shared folders yet." : "No shared documents for your department."}
+            </div>
+          )
+        ) : (
+          <div className="doc-folder-list">
+            {sharedFolders.map(folder => {
+              const folderDocs = sharedDocs.filter(d => d.folder_id === folder.id);
+              const isExpanded = expandedSharedFolders.has(folder.id);
+              const isRenaming = renamingSharedFolderId === folder.id;
+              const isUploading = uploadingSharedFolderId === folder.id;
+              const isProcessingAny = folderDocs.some(d => d.chunk_count === 0);
+
+              return (
+                <div key={folder.id} className="doc-folder">
+                  <div className="doc-folder-hdr">
+                    <button
+                      className="doc-folder-chevron"
+                      onClick={() => toggleExpandSharedFolder(folder.id)}
+                    >
+                      {isExpanded ? "▼" : "▶"}
+                    </button>
+
+                    {isRenaming && isAdmin ? (
+                      <input
+                        className="doc-folder-rename-input"
+                        autoFocus
+                        value={renamingSharedFolderName}
+                        onChange={e => setRenamingSharedFolderName(e.target.value)}
+                        onKeyDown={e => {
+                          if (e.key === "Enter") renameSharedFolder(folder.id, renamingSharedFolderName);
+                          if (e.key === "Escape") setRenamingSharedFolderId(null);
+                        }}
+                        onBlur={() => renameSharedFolder(folder.id, renamingSharedFolderName)}
+                      />
+                    ) : (
+                      <span
+                        className="doc-folder-name"
+                        title={folder.name}
+                        onDoubleClick={() => {
+                          if (isAdmin) {
+                            setRenamingSharedFolderId(folder.id);
+                            setRenamingSharedFolderName(folder.name);
+                          }
+                        }}
+                      >
+                        {folder.name}
+                      </span>
+                    )}
+
+                    <span className="doc-badge doc-badge--dept">{folder.department}</span>
+                    <span className="doc-folder-count">({folderDocs.length})</span>
+
+                    {isAdmin && (
+                      <div className="doc-folder-actions">
+                        <button
+                          className="doc-folder-btn"
+                          onClick={() => {
+                            setRenamingSharedFolderId(folder.id);
+                            setRenamingSharedFolderName(folder.name);
+                          }}
+                          title="Rename folder"
+                        >
+                          ✏
+                        </button>
+                        <button
+                          className="doc-folder-btn doc-folder-btn--danger"
+                          onClick={() => deleteSharedFolder(folder.id)}
+                          title="Delete folder"
+                        >
+                          🗑
+                        </button>
+                      </div>
+                    )}
+                  </div>
+
+                  {isExpanded && (
+                    <div className="doc-folder-body">
+                      {isAdmin && (
+                        <button
+                          className="doc-add-files-btn"
+                          disabled={isUploading}
+                          onClick={() => {
+                            uploadSharedFolderIdRef.current = folder.id;
+                            if (sharedDocFileInputRef.current) {
+                              sharedDocFileInputRef.current.value = "";
+                              sharedDocFileInputRef.current.click();
+                            }
+                          }}
+                        >
+                          {isUploading ? "Uploading…" : "+ Add Files"}
+                        </button>
+                      )}
+
+                      {(isUploading || isProcessingAny) && (
+                        <div className="doc-uploading-row">
+                          <span className="doc-uploading-spinner" />
+                          {isUploading ? "Uploading files…" : "Processing files…"}
+                        </div>
+                      )}
+
+                      {folderDocs.length === 0 && !isUploading ? (
+                        <div className="doc-folder-empty">No files yet.</div>
+                      ) : (
+                        folderDocs.map(doc => renderSharedDocItem(doc))
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Hidden shared file input */}
+        <input
+          ref={sharedDocFileInputRef}
+          type="file"
+          multiple
+          accept=".pdf,.docx,.txt,.md"
+          hidden
+          onChange={e => {
+            if (uploadSharedFolderIdRef.current !== null) {
+              uploadToSharedFolder(e.target.files, uploadSharedFolderIdRef.current);
+            }
+          }}
+        />
+
+        {/* ── User Management button (admin only) ── */}
+        {isAdmin && (
+          <div className="user-mgmt-btn-wrap">
+            <button
+              className="user-mgmt-btn"
+              onClick={() => { fetchAdminUsers(); setShowUsersModal(true); }}
+            >
+              👤 Manage Users
+            </button>
+          </div>
+        )}
+      </aside>
+
+      {/* ─── File content preview modal ─── */}
+      {previewDoc && (
+        <div className="overlay" onClick={() => setPreviewDoc(null)}>
+          <div className="modal modal--wide doc-preview-modal" onClick={e => e.stopPropagation()}>
+            <div className="modal-hdr">
+              <span className="modal-title">
+                {previewDoc.isShared ? "🌐" : "📄"} {previewDoc.filename}
+              </span>
+              <button className="modal-close" onClick={() => setPreviewDoc(null)}>✕</button>
+            </div>
+            <div className="modal-body doc-preview-body">
+              {previewLoading ? (
+                <div className="doc-preview-loading">Loading content…</div>
+              ) : (
+                <>
+                  {previewTruncated && (
+                    <div className="doc-preview-truncated">
+                      ⚠ Showing first 50,000 characters only.
+                    </div>
+                  )}
+                  <pre className="doc-preview-content">{previewContent}</pre>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ─── Help modal ─── */}
+      {showHelp && (
+        <div className="overlay" onClick={() => setShowHelp(false)}>
+          <div className="modal modal--wide" onClick={e => e.stopPropagation()}>
+            <div className="modal-hdr">
+              <span className="modal-title">❓ Help &amp; Guide</span>
+              <button className="modal-close" onClick={() => setShowHelp(false)}>✕</button>
+            </div>
+            <div className="modal-body help-body">
+
+              <section className="help-section">
+                <h3 className="help-h3">💬 Chat Modes</h3>
+                <p>Use the four modules to focus the AI on your task:</p>
+                <ul className="help-list">
+                  <li><strong>Data Query</strong> — describe what data you need; the AI guides you through querying internal databases in plain language.</li>
+                  <li><strong>Document Q&amp;A</strong> — ask questions about uploaded documents. The AI searches your files and shared department documents, then answers with cited sources.</li>
+                  <li><strong>Resume Screening</strong> — define criteria or upload job descriptions and let the AI evaluate candidates.</li>
+                  <li><strong>General Chat</strong> — ask anything: technology trends, how things work, coding help, general knowledge.</li>
+                </ul>
+                <p>No module selected = General Chat by default.</p>
+              </section>
+
+              <section className="help-section">
+                <h3 className="help-h3">📁 My Documents</h3>
+                <p>Upload your own private files (PDF, DOCX, TXT, MD — up to 0.5 GB total).</p>
+                <ul className="help-list">
+                  <li><strong>Create folder</strong> — click <em>+ New Folder</em> in the right panel, type a name, press Enter.</li>
+                  <li><strong>Rename folder</strong> — double-click the folder name, or hover and click the ✏ button.</li>
+                  <li><strong>Upload files</strong> — expand a folder, click <em>+ Add Files</em>, pick files. The panel shows <em>Uploading files…</em> then <em>Processing files…</em> while the AI embeds the content.</li>
+                  <li><strong>Preview file</strong> — click the filename to open a content preview (up to 50,000 characters).</li>
+                  <li><strong>Attach / Detach</strong> — ⏸ detaches the file so it is ignored by the AI; ▶ re-attaches it. Use the folder-level buttons to toggle all files at once.</li>
+                  <li><strong>Delete file / folder</strong> — click 🗑. Deleting a folder removes all files inside permanently.</li>
+                </ul>
+              </section>
+
+              <section className="help-section">
+                <h3 className="help-h3">🌐 Shared Documents</h3>
+                <p>Admin-created folders visible to specific departments. Once your admin assigns your department, you automatically see the relevant shared folders.</p>
+                <ul className="help-list">
+                  <li><strong>Preview</strong> — click any filename to read the file content.</li>
+                  <li><strong>Attach / Detach toggle</strong> — ⏸ detaches a shared file from <em>your own</em> AI responses without affecting other users; ▶ re-attaches it.</li>
+                  <li>Shared files are automatically included in Document Q&amp;A RAG alongside your personal files.</li>
+                </ul>
+              </section>
+
+              <section className="help-section">
+                <h3 className="help-h3">🤖 RAG — AI Document Answering</h3>
+                <p>When you ask a question, the AI searches attached documents (personal + shared) for relevant passages, then uses them to build its answer. Cited sources appear below each AI response — click <em>▼ Show</em> to expand excerpts. A 🌐 badge marks sources from shared documents.</p>
+                <p>Detach a document to exclude it from all future queries (your setting only).</p>
+              </section>
+
+              <section className="help-section">
+                <h3 className="help-h3">🗂 Chat Sessions</h3>
+                <ul className="help-list">
+                  <li><strong>New chat</strong> — click ✏ in the top-left of the sidebar.</li>
+                  <li><strong>Restore session</strong> — click any session in the History list to reload the full conversation.</li>
+                  <li><strong>Delete session</strong> — hover a session and click 🗑. This permanently removes the conversation.</li>
+                </ul>
+              </section>
+
+              <section className="help-section">
+                <h3 className="help-h3">🛠 Admin Capabilities</h3>
+                <p>Admins see extra controls in the Shared Documents panel and a User Management section below it.</p>
+                <ul className="help-list">
+                  <li><strong>Assign departments</strong> — click the <em>👤 Manage Users</em> button at the bottom of the right panel. In the popup, click a department cell to edit, press Enter or click away to save. Users with no department see no shared documents.</li>
+                  <li><strong>Create shared folder</strong> — click <em>+ New Folder</em> in the Shared Documents section, provide a folder name and the department name that should have access.</li>
+                  <li><strong>Upload to shared folder</strong> — expand the folder, click <em>+ Add Files</em>.</li>
+                  <li><strong>👁 Visibility toggle</strong> — hide or show a shared file from all department users.</li>
+                  <li><strong>⏸ Detach / ▶ Attach</strong> — detach or re-attach a shared file for your own AI responses (does not affect other users).</li>
+                  <li><strong>Manage bug reports</strong> — mark reports Open / Resolved or delete them in the All Reports tab.</li>
+                </ul>
+              </section>
+
+              <section className="help-section">
+                <h3 className="help-h3">⚙️ Settings</h3>
+                <ul className="help-list">
+                  <li><strong>Theme</strong> — toggle between dark and light mode.</li>
+                  <li><strong>AI Response Quality</strong> — Fast (Haiku) for quick answers, Smart (Sonnet) for most tasks, Expert (Opus) for deep analysis.</li>
+                </ul>
+              </section>
+
+              <section className="help-section">
+                <h3 className="help-h3">🐛 Report a Bug</h3>
+                <p>Click <em>Report Bug</em> in the sidebar footer. Describe the issue and optionally attach a screenshot. All reports are visible to admins in the All Reports tab.</p>
+              </section>
+
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ─── Settings modal ─── */}
       {showSettings && (
@@ -820,7 +1844,7 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* ─── Bug report modal ─── */}
+      {/* ─── Bug / Admin modal ─── */}
       {showBugModal && (
         <div className="overlay" onClick={() => setShowBugModal(false)}>
           <div className="modal modal--wide" onClick={e => e.stopPropagation()}>
@@ -871,7 +1895,7 @@ export default function Dashboard() {
                     {bugSubmitting ? "Submitting…" : "Submit Report"}
                   </button>
                 </div>
-              ) : (
+              ) : bugView === "list" ? (
                 <div className="bug-list">
                   {bugs.length === 0 ? (
                     <div className="bug-empty">No reports yet.</div>
@@ -927,7 +1951,76 @@ export default function Dashboard() {
                     ))
                   )}
                 </div>
-              )}
+              ) : null}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ─── User Management modal (admin only) ─── */}
+      {showUsersModal && (
+        <div className="overlay" onClick={() => setShowUsersModal(false)}>
+          <div className="modal modal--wide" onClick={e => e.stopPropagation()}>
+            <div className="modal-hdr">
+              <span className="modal-title">👤 User Management</span>
+              <button className="modal-close" onClick={() => setShowUsersModal(false)}>✕</button>
+            </div>
+            <div className="modal-body">
+              <div className="admin-users-tab">
+                <p className="admin-users-hint">
+                  Click a department cell to edit. Press Enter or click away to save.
+                  Leave blank to clear the department.
+                </p>
+                {adminUsers.length === 0 ? (
+                  <div className="bug-empty">No users found.</div>
+                ) : (
+                  <table className="admin-users-table">
+                    <thead>
+                      <tr>
+                        <th>Email</th>
+                        <th>Department</th>
+                        <th>Joined</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {adminUsers.map(u => (
+                        <tr key={u.email}>
+                          <td className="admin-users-email">{u.email}</td>
+                          <td>
+                            {editingUserEmail === u.email ? (
+                              <input
+                                className="user-dept-input"
+                                autoFocus
+                                value={editingDeptValue}
+                                onChange={e => setEditingDeptValue(e.target.value)}
+                                onKeyDown={e => {
+                                  if (e.key === "Enter") saveUserDepartment(u.email, editingDeptValue);
+                                  if (e.key === "Escape") setEditingUserEmail(null);
+                                }}
+                                onBlur={() => saveUserDepartment(u.email, editingDeptValue)}
+                              />
+                            ) : (
+                              <span
+                                className={`user-dept-cell ${u.department ? "user-dept-cell--set" : "user-dept-cell--empty"}`}
+                                onClick={() => {
+                                  setEditingUserEmail(u.email);
+                                  setEditingDeptValue(u.department || "");
+                                }}
+                                title="Click to edit"
+                              >
+                                {u.department || "— click to assign —"}
+                              </span>
+                            )}
+                          </td>
+                          <td className="admin-users-date">
+                            {new Date(u.created_at).toLocaleDateString()}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
             </div>
           </div>
         </div>

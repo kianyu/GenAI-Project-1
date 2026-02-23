@@ -1,8 +1,9 @@
 """
 RAG — Retrieval pipeline
 Embeds the user's query via the Gemini REST API (v1), performs a cosine-similarity
-search against the user's active document chunks in pgvector, and returns
-a formatted context string plus a list of source citations.
+search against the user's active personal document chunks AND any active shared
+document chunks from the user's department, then returns a formatted context
+string plus source citations.
 """
 
 import os
@@ -37,14 +38,18 @@ async def retrieve_context(
     query: str,
     user_email: str,
     db: AsyncSession,
+    is_admin: bool = False,
     top_k: int = 5,
 ) -> tuple[str, list[dict]]:
     """
-    RAG retrieval:
+    RAG retrieval combining personal and shared documents:
       1. Embed the query
-      2. Cosine-similarity search over the user's active document chunks
+      2. UNION cosine-similarity search over personal + shared chunks
       3. Return (context_str, sources_list)
 
+    Admin users search ALL visible shared docs (regardless of department).
+    Regular users search only shared docs whose folder department matches their own.
+    Users without a department get no shared-doc results.
     Returns ("", []) if GOOGLE_API_KEY is not configured or no chunks found.
     """
     if not os.getenv("GOOGLE_API_KEY"):
@@ -55,21 +60,77 @@ async def retrieve_context(
     except Exception:
         return "", []
 
-    # Format vector as PostgreSQL literal: '[0.1,0.2,...]'
     embedding_str = "[" + ",".join(str(x) for x in query_embedding) + "]"
 
-    sql = text("""
-        SELECT
-            dc.content,
-            dc.chunk_index,
-            dc.document_id,
-            d.original_filename AS filename
-        FROM document_chunks dc
-        JOIN documents d ON dc.document_id = d.id
-        WHERE d.user_email = :user_email
-          AND d.is_active = true
-          AND dc.embedding IS NOT NULL
-        ORDER BY dc.embedding <=> CAST(:embedding AS vector)
+    # Admin: search all visible shared docs (no dept restriction).
+    # User: search only docs whose folder dept matches the user's dept.
+    if is_admin:
+        shared_subquery = """
+            SELECT
+                sdc.content,
+                sdc.chunk_index,
+                sdc.document_id,
+                sd.original_filename AS filename,
+                'shared' AS source_type,
+                sdc.embedding <=> CAST(:embedding AS vector) AS distance
+            FROM shared_document_chunks sdc
+            JOIN shared_documents sd ON sdc.document_id = sd.id
+            WHERE sd.is_visible = true
+              AND sdc.embedding IS NOT NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM user_shared_doc_prefs p
+                  WHERE p.user_email = :user_email
+                    AND p.doc_id = sdc.document_id
+                    AND p.is_rag_active = false
+              )
+        """
+    else:
+        shared_subquery = """
+            SELECT
+                sdc.content,
+                sdc.chunk_index,
+                sdc.document_id,
+                sd.original_filename AS filename,
+                'shared' AS source_type,
+                sdc.embedding <=> CAST(:embedding AS vector) AS distance
+            FROM shared_document_chunks sdc
+            JOIN shared_documents sd ON sdc.document_id = sd.id
+            JOIN shared_folders sf ON sd.folder_id = sf.id
+            JOIN users u ON u.email = :user_email
+            WHERE sf.department = u.department
+              AND sd.is_visible = true
+              AND sdc.embedding IS NOT NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM user_shared_doc_prefs p
+                  WHERE p.user_email = :user_email
+                    AND p.doc_id = sdc.document_id
+                    AND p.is_rag_active = false
+              )
+        """
+
+    sql = text(f"""
+        SELECT content, chunk_index, document_id, filename, source_type
+        FROM (
+            -- Personal docs (user-owned, active, embedded)
+            SELECT
+                dc.content,
+                dc.chunk_index,
+                dc.document_id,
+                d.original_filename AS filename,
+                'personal' AS source_type,
+                dc.embedding <=> CAST(:embedding AS vector) AS distance
+            FROM document_chunks dc
+            JOIN documents d ON dc.document_id = d.id
+            WHERE d.user_email = :user_email
+              AND d.is_active = true
+              AND dc.embedding IS NOT NULL
+
+            UNION ALL
+
+            -- Shared docs (visible, user hasn't detached)
+            {shared_subquery}
+        ) combined
+        ORDER BY distance
         LIMIT :top_k
     """)
 
@@ -94,7 +155,8 @@ async def retrieve_context(
             "doc_id": row.document_id,
             "filename": row.filename,
             "chunk_index": row.chunk_index,
-            "excerpt": row.content,  # full chunk text shown in source card
+            "excerpt": row.content,
+            "source_type": row.source_type,  # "personal" | "shared"
         })
         context_parts.append(
             f"[Source: {row.filename}]\n{row.content}"

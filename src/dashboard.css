@@ -664,6 +664,36 @@
   border-color: var(--text-muted);
 }
 
+.doc-active-bar-hint {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  margin-left: 5px;
+  border-radius: 50%;
+  border: 1px solid currentColor;
+  font-size: 9px;
+  font-weight: 700;
+  opacity: 0.6;
+  cursor: help;
+  vertical-align: middle;
+  line-height: 1;
+}
+
+.doc-active-bar-hint:hover {
+  opacity: 1;
+}
+
+.doc-active-bar--shared {
+  background: rgba(20, 184, 166, 0.08);
+  border-color: rgba(20, 184, 166, 0.30);
+}
+
+.doc-active-bar--shared .doc-active-bar-text {
+  color: #14b8a6;
+}
+
 /* ─── Input area ─── */
 .chat-input-wrap {
   padding: 14px 32px 18px;
@@ -1213,7 +1243,7 @@
 
 /* ─── RAG Document right panel ─── */
 .doc-panel-right {
-  width: 300px;
+  width: 320px;
   flex-shrink: 0;
   background: var(--bg-sidebar);
   border-left: 1px solid var(--border);
@@ -1322,6 +1352,18 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* doc-item inside folder has smaller padding */
+.doc-folder-body .doc-item {
+  padding: 4px 6px;
+  border-color: transparent;
+  background: transparent;
+}
+
+.doc-folder-body .doc-item:hover {
+  background: var(--bg-card);
+  border-color: var(--border);
 }
 
 .doc-badge {
@@ -1494,6 +1536,621 @@
   margin: 8px 0 0;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* ─── Storage bar ─── */
+.doc-storage-wrap {
+  margin-bottom: 12px;
+}
+
+.doc-storage-labels {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10px;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+
+.doc-storage-warn {
+  color: #f87171;
+}
+
+.doc-storage-track {
+  height: 4px;
+  background: var(--border);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.doc-storage-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 2px;
+  transition: width 0.4s ease;
+}
+
+.doc-storage-fill--warn {
+  background: #f87171;
+}
+
+/* ─── New folder inline input ─── */
+.doc-folder-create {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: 8px;
+}
+
+.doc-folder-create-input {
+  flex: 1;
+  background: var(--bg-input);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: 12px;
+  padding: 5px 8px;
+  outline: none;
+  min-width: 0;
+}
+
+.doc-folder-create-btn {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 5px 10px;
+  cursor: pointer;
+  font-family: inherit;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: background 0.15s;
+}
+
+.doc-folder-create-btn:hover:not(:disabled) { background: var(--accent-hover); }
+.doc-folder-create-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.doc-folder-create-cancel {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 13px;
+  padding: 4px;
+  border-radius: 4px;
+  line-height: 1;
+  flex-shrink: 0;
+  transition: color 0.15s;
+}
+
+.doc-folder-create-cancel:hover { color: var(--text-primary); }
+
+/* ─── Folder list ─── */
+.doc-folder-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.doc-folder {
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.doc-folder--uncategorized .doc-folder-hdr {
+  opacity: 0.7;
+}
+
+.doc-folder-hdr {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 6px;
+  border-radius: 8px;
+  cursor: default;
+  transition: background 0.12s;
+}
+
+.doc-folder-hdr:hover {
+  background: var(--bg-card);
+}
+
+.doc-folder-chevron {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 9px;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 3px;
+  line-height: 1;
+  flex-shrink: 0;
+  transition: color 0.12s;
+}
+
+.doc-folder-chevron:hover { color: var(--text-primary); }
+
+.doc-folder-name {
+  flex: 1;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  cursor: default;
+}
+
+.doc-folder-rename-input {
+  flex: 1;
+  background: var(--bg-input);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 2px 6px;
+  outline: none;
+  min-width: 0;
+}
+
+.doc-folder-count {
+  font-size: 10px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.doc-folder-actions {
+  display: flex;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity 0.15s;
+  flex-shrink: 0;
+}
+
+.doc-folder-hdr:hover .doc-folder-actions {
+  opacity: 1;
+}
+
+.doc-folder-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 11px;
+  padding: 2px 5px;
+  border-radius: 4px;
+  line-height: 1;
+  font-family: inherit;
+  transition: color 0.12s, background 0.12s;
+}
+
+.doc-folder-btn:hover {
+  color: var(--text-primary);
+  background: var(--bg-card-hover);
+}
+
+.doc-folder-btn--danger:hover {
+  color: #f87171;
+  background: rgba(239, 68, 68, 0.08);
+}
+
+/* ─── Folder body (expanded file list) ─── */
+.doc-folder-body {
+  padding: 4px 4px 6px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.doc-add-files-btn {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: 1px dashed var(--border);
+  border-radius: 5px;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-family: inherit;
+  padding: 4px 8px;
+  cursor: pointer;
+  margin-bottom: 4px;
+  transition: border-color 0.15s, color 0.15s;
+}
+
+.doc-add-files-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.doc-add-files-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.doc-folder-empty {
+  font-size: 11px;
+  color: var(--text-muted);
+  padding: 2px 0;
+}
+
+.doc-uploading-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11px;
+  color: var(--accent);
+  padding: 4px 2px;
+}
+
+.doc-uploading-spinner {
+  display: inline-block;
+  width: 11px;
+  height: 11px;
+  border: 2px solid rgba(59, 130, 246, 0.25);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ─── Doc item (inside folder) ─── */
+.doc-item-name-btn {
+  flex: 1;
+  min-width: 0;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 11px;
+  color: var(--text-primary);
+  font-family: inherit;
+  text-align: left;
+  padding: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: color 0.12s;
+}
+
+.doc-item-name-btn:hover { color: var(--accent); }
+
+/* ─── File content preview modal ─── */
+.doc-preview-modal {
+  width: 700px;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.doc-preview-body {
+  flex: 1;
+  overflow-y: auto;
+  max-height: 60vh;
+  padding: 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.doc-preview-loading {
+  color: var(--text-muted);
+  font-size: 13px;
+  text-align: center;
+  padding: 32px 0;
+}
+
+.doc-preview-truncated {
+  background: rgba(251, 191, 36, 0.1);
+  border: 1px solid rgba(251, 191, 36, 0.3);
+  color: #fbbf24;
+  font-size: 12px;
+  padding: 6px 12px;
+  border-radius: 6px;
+  flex-shrink: 0;
+}
+
+.doc-preview-content {
+  font-family: 'Fira Code', 'Cascadia Code', 'Consolas', monospace;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
+  flex: 1;
+}
+
+/* ─── Shared Documents section ─── */
+.shared-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 20px;
+  margin-bottom: 8px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+  gap: 8px;
+}
+
+/* Department badge on shared folder headers */
+.doc-badge--dept {
+  background: rgba(20, 184, 166, 0.12);
+  color: #2dd4bf;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 1px 6px;
+  border-radius: 10px;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+/* Admin toggle on/off state colours */
+.doc-toggle-on {
+  color: #4ade80 !important;
+}
+
+.doc-toggle-off {
+  color: var(--text-muted) !important;
+  opacity: 0.6;
+}
+
+/* Admin personal RAG toggle — slightly dimmer to distinguish from global toggle */
+.doc-toggle-personal {
+  opacity: 0.75;
+}
+
+.doc-toggle-personal.doc-toggle-on {
+  color: #34d399 !important;
+  opacity: 0.75;
+}
+
+.doc-toggle-personal::after {
+  content: "me";
+  font-size: 7px;
+  vertical-align: super;
+  margin-left: 1px;
+  opacity: 0.7;
+}
+
+/* Shared folder creation: stacked inputs */
+.doc-folder-create--shared {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.doc-folder-create--shared .doc-folder-create-input {
+  margin-bottom: 4px;
+}
+
+.doc-folder-create--shared > :last-child,
+.doc-folder-create--shared > :nth-last-child(2) {
+  align-self: flex-end;
+}
+
+.doc-folder-create--shared .doc-folder-create-btn,
+.doc-folder-create--shared .doc-folder-create-cancel {
+  display: inline-block;
+}
+
+.doc-folder-create--shared {
+  flex-wrap: wrap;
+  row-gap: 4px;
+}
+
+/* Source card "shared" badge */
+.source-shared-badge {
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  background: rgba(20, 184, 166, 0.12);
+  color: #2dd4bf;
+  padding: 1px 5px;
+  border-radius: 8px;
+  margin-left: 5px;
+  vertical-align: middle;
+  flex-shrink: 0;
+}
+
+/* Department badge in sidebar user area */
+.sb-dept-badge {
+  font-size: 10px;
+  font-weight: 500;
+  background: rgba(20, 184, 166, 0.12);
+  color: #2dd4bf;
+  padding: 1px 7px;
+  border-radius: 8px;
+}
+
+/* ─── User Management button (right sidebar) ─── */
+.user-mgmt-btn-wrap {
+  padding: 10px 12px 14px;
+}
+
+.user-mgmt-btn {
+  width: 100%;
+  padding: 8px 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.user-mgmt-btn:hover {
+  background: var(--bg-hover);
+  border-color: var(--text-muted);
+  color: var(--text-primary);
+}
+
+/* ─── Admin Users panel (right sidebar) ─── */
+.admin-users-panel {
+  padding: 0 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* ─── Admin Users tab (modal) ─── */
+.admin-users-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.admin-users-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.5;
+  padding: 8px 10px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.admin-users-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.admin-users-table th {
+  text-align: left;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--text-muted);
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.admin-users-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+
+.admin-users-table tr:last-child td {
+  border-bottom: none;
+}
+
+.admin-users-table tr:hover td {
+  background: var(--bg-card);
+}
+
+.admin-users-email {
+  color: var(--text-primary);
+  font-weight: 500;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.admin-users-panel .admin-users-email {
+  max-width: 120px;
+}
+
+.admin-users-date {
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.user-dept-cell {
+  cursor: pointer;
+  border-radius: 4px;
+  padding: 2px 6px;
+  display: inline-block;
+  transition: background 0.12s;
+}
+
+.user-dept-cell--set {
+  color: #2dd4bf;
+  background: rgba(20, 184, 166, 0.08);
+  font-weight: 500;
+}
+
+.user-dept-cell--empty {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.user-dept-cell:hover {
+  background: var(--bg-card-hover);
+}
+
+.user-dept-input {
+  background: var(--bg-input);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: 12px;
+  padding: 3px 7px;
+  outline: none;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+/* ─── Help modal ─── */
+.help-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.help-section {
+  padding: 14px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.help-section:last-child {
+  border-bottom: none;
+}
+
+.help-h3 {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin: 0 0 8px;
+}
+
+.help-section p {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.6;
+  margin: 0 0 6px;
+}
+
+.help-list {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.7;
+  padding-left: 20px;
+  margin: 6px 0 0;
+}
+
+.help-list li {
+  margin-bottom: 4px;
+}
+
+.help-list strong {
+  color: var(--text-primary);
 }
 
 /* Contributor badge */
